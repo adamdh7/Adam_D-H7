@@ -4,7 +4,7 @@
   "logo": "https://files.catbox.moe/w8icmm.jpeg",
   "keywords": ["bot"],
   "documentation-link": "https://session.talkdrove.com",
-  "owner-verification": "https://github.com/adamdh7",
+  "owner-verification": "h4x3r-verify-abc123",
   "commands": [
     {
       "name": "tagall",
