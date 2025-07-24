@@ -5,6 +5,16 @@
   "keywords": ["bot"],
   "documentation-link": "https://session.talkdrove.com",
   "owner-verification": "https://github.com/adamdh7",
+  "commands": [
+    {
+      "name": "tagall",
+      "description": "Mentionne tous les membres (1 utilisateur par ligne)"
+    },
+    {
+      "name": "kickall",
+      "description": "Expulse tous les membres du groupe (sauf admins et bot)"
+    }
+  ],
   "env": {
     "SESSION_ID": {
       "description": "Put session id",
@@ -12,9 +22,9 @@
       "required": true
     },
     "PREFIX": {
-      "description": "Bot command prefix, (e.g, . , ! @ etc",
+      "description": "Bot command prefix (., !, @, etc.)",
       "value": ".",
-      "required": true  
+      "required": true
     },
     "PREMIUM_USERS": {
       "description": "premium users",
