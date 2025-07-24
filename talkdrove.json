@@ -4,7 +4,7 @@
   "logo": "https://files.catbox.moe/w8icmm.jpeg",
   "keywords": ["bot"],
   "documentation-link": "https://session.talkdrove.com",
-  "owner-verification": "talkdrove@gmail.com",
+  "owner-verification": "https://github.com/adamdh7",
   "env": {
     "SESSION_ID": {
       "description": "Put session id",
