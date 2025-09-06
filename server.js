@@ -1,6 +1,4 @@
-// server.js - Adam_DH7 / Tergene (corrigé)
-// Notes : version robuste sans optional chaining dans les endroits critiques.
-
+// server.js - Adam_DH7 / Tergene
 global.WebSocket = require('ws');
 global.fetch = require('node-fetch');
 
@@ -17,8 +15,7 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
-  DisconnectReason,
-  jidNormalizedUser
+  DisconnectReason
 } = require('baileys');
 
 const app = express();
@@ -41,19 +38,6 @@ app.get('/health', (req, res) => res.status(200).send('ok'));
 // sessions base dir
 const SESSIONS_BASE = path.join(__dirname, 'sessions');
 if (!fs.existsSync(SESSIONS_BASE)) fs.mkdirSync(SESSIONS_BASE, { recursive: true });
-
-// Config persistence
-const CONFIG_PATH = path.join(__dirname, 'bot_config.json');
-let config = { bannedUsers: [] };
-function loadConfig(){
-  try {
-    if (fs.existsSync(CONFIG_PATH)) config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-  } catch(e){ console.warn('loadConfig error', e); }
-}
-function saveConfig(){
-  try { fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), 'utf8'); } catch(e){ console.warn('saveConfig error', e); }
-}
-loadConfig();
 
 // CONFIG — modifie si besoin
 const OWNER_NAME = 'Adam_DH7';
@@ -154,14 +138,12 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
   }
 
   // helper: envoie texte + image (skipImage = true => texte seul)
-  async function sendWithImage(jid, content, options) {
-    options = options || {};
-    const text = (typeof content === 'string') ? content : (content && content.text) ? content.text : '';
-    const mentions = (content && typeof content === 'object' && content.mentions) ? content.mentions : undefined;
-    const quoted = (content && typeof content === 'object' && content.quoted) ? content.quoted : undefined;
+  async function sendWithImage(jid, content, options = {}) {
+    const text = (typeof content === 'string') ? content : (content.text || '');
+    const mentions = (typeof content === 'object' && content.mentions) ? content.mentions : undefined;
+    const quoted = (typeof content === 'object' && content.quoted) ? content.quoted : undefined;
 
-    // évite usage d'optional chaining ici
-    if (options && options.skipImage) {
+    if (options.skipImage) {
       const msg = { text };
       if (mentions) msg.mentions = mentions;
       if (quoted) msg.quoted = quoted;
@@ -195,8 +177,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     return sock.sendMessage(jid, msg);
   }
 
-  async function quickReply(jid, text, opts) {
-    opts = opts || {};
+  async function quickReply(jid, text, opts = {}) {
     return sendWithImage(jid, text, opts);
   }
 
@@ -209,20 +190,13 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     return jid.split('@')[0];
   }
   function getDisplayName(msg) {
-    if (!msg) return 'Utilisateur';
-    if (msg.pushName) return msg.pushName;
-    try {
-      if (msg.message && msg.message.extendedTextMessage && msg.message.extendedTextMessage.contextInfo && msg.message.extendedTextMessage.contextInfo.participant) {
-        return msg.message.extendedTextMessage.contextInfo.participant;
-      }
-    } catch (e) {}
-    return 'Utilisateur';
+    return msg.pushName || (msg.message && msg.message?.extendedTextMessage?.contextInfo?.participant) || 'Utilisateur';
   }
 
   async function isGroupAdminFn(jid, participantId) {
     try {
       const meta = await sock.groupMetadata(jid);
-      const p = (meta && meta.participants) ? meta.participants.find(x => x.id === participantId) : null;
+      const p = meta.participants.find(x => x.id === participantId);
       return !!(p && (p.admin || p.admin === 'superadmin'));
     } catch (e) {
       return false;
@@ -232,9 +206,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
   // --- TRACE: connection.update handler (QR, open, close, restart) ---
   sock.ev.on('connection.update', async (update) => {
     try {
-      const connection = update.connection;
-      const qr = update.qr;
-      const lastDisconnect = update.lastDisconnect;
+      const { connection, qr, lastDisconnect } = update;
       if (qr) {
         try {
           const dataUrl = await QRCode.toDataURL(qr);
@@ -254,11 +226,11 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           }
         } catch (e) { /* ignore */ }
 
-        // reconnaître automatiquement l'utilisateur qui a scanné le QR comme owner de la session
+        // --- NOUVEAU : reconnaître automatiquement l'utilisateur qui a scanné le QR comme owner de la session ---
         try {
-          const me = (sock.user && (sock.user.id || sock.user.jid)) ? (sock.user.id || sock.user.jid) : null;
+          const me = sock.user?.id || sock.user?.jid || (sock.user && sock.user[0] && sock.user[0].id);
           if (me) {
-            const ownerNum = (typeof me === 'string' && me.indexOf('@') !== -1) ? me.split('@')[0] : String(me);
+            const ownerNum = (typeof me === 'string' && me.includes('@')) ? me.split('@')[0] : String(me);
             sessionObj.sessionOwnerNumber = ownerNum.replace(/\D/g, '');
             console.log(`[${sessionId}] sessionOwnerNumber détecté automatiquement: ${sessionObj.sessionOwnerNumber}`);
           }
@@ -273,7 +245,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
       }
 
       if (connection === 'close') {
-        const code = (lastDisconnect && lastDisconnect.error && lastDisconnect.error.output && lastDisconnect.error.output.statusCode) ? lastDisconnect.error.output.statusCode : null;
+        const code = (lastDisconnect?.error || {}).output?.statusCode || null;
         console.log(`[${sessionId}] Connection closed, code=${code}`);
         socket.emit('disconnected', { sessionId, reason: code });
 
@@ -318,65 +290,64 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     }
   });
   
-  function buildMenu(pushName) {
-    pushName = pushName || 'Utilisateur';
-    return '*○ Menu*\\n\\n' +
-  '  *' + BOT_NAME + '*\\n' +
-  '────────────────────────────\\n' +
-  '🚶🏻‍♂️ 𝐔𝐬𝐞𝐫: "' + pushName + '"\\n' +
-  '🥀 𝐎𝐰𝐧𝐞𝐫: *' + OWNER_NAME + '*\\n\\n' +
-  '────────────────────────────\\n' +
-  '📂 𝐂𝐨𝐦𝐦𝐚𝐧𝐝𝐞𝐬:\\n' +
-  '────────────────────────────\\n\\n' +
-  '🔱 *Général*\\n' +
-  '*● Menu*\\n' +
-  '*● Ban*\\n' +
-  '*○ Owner*\\n' +
-  '*○ Signale*\\n' +
-  '*● Qr [texte]*\\n\\n' +
-  '🔱 *Groupe*\\n' +
-  '*○ Lien*\\n' +
-  '*● Tagall*\\n' +
-  '*○ Hidetag*\\n' +
-  '*● Kick*\\n' +
-  '*○ Add*\\n' +
-  '*● Promote*\\n' +
-  '*○ Demote*\\n' +
-  '*● Kickall*\\n' +
-  '*○ Ferme*\\n' +
-  '*● Ouvert*\\n' +
-  '*○ Bienvenue [off]*\\n\\n' +
-  '🔱 *Modération*\\n' +
-  '*● Nolien*\\n' +
-  '*○ Nolien2*\\n' +
-  '*● Kickall*\\n' +
-  '*○ Kick*\\n' +
-  '*● Add*\\n' +
-  '*○ Promote*\\n' +
-  '*● Delmote*\\n\\n' +
-  '  *' + BOT_NAME + '*\\n' +
-  '────────────────────────────\\n' +
-  '> *D\\'H7 | Tergene*';
-  }
+  function buildMenu(pushName = 'Utilisateur') {
+    return `*○ Menu*\n\n` +
+`  *${BOT_NAME}*\n` +
+`────────────────────────────\n` +
+`🚶🏻‍♂️ 𝐔𝐬𝐞𝐫: "${pushName}"\n` +
+`🥀 𝐎𝐰𝐧𝐞𝐫: *${OWNER_NAME}*\n\n` +
+`────────────────────────────\n` +
+`📂 𝐂𝐨𝐦𝐦𝐚𝐧𝐝𝐞𝐬:\n` +
+`────────────────────────────\n\n` +
 
-  function resolveTargetIds(opts) {
-    const jid = opts.jid;
-    const m = opts.m;
-    const args = opts.args || [];
+`🔱 *Général*\n` +
+`*● Menu*\n` +
+`*● Ban*\n` +
+`*○ Owner*\n` +
+`*○ Signale*\n` +
+`*● Qr [texte]*\n\n` +
+
+`🔱 *Groupe*\n` +
+`*○ Lien*\n` +
+`*● Tagall*\n` +
+`*○ Hidetag*\n` +
+`*● Kick*\n` +
+`*○ Add*\n` +
+`*● Promote*\n` +
+`*○ Demote*\n` +
+`*● Kickall*\n` +
+`*○ Ferme*\n` +
+`*● Ouvert*\n` +
+`*○ Bienvenue [off]*\n\n` +
+
+`🔱 *Modération*\n` +
+`*● Nolien*\n` +
+`*○ Nolien2*\n` +
+`*● Kickall*\n` +
+`*○ Kick*\n` +
+`*● Add*\n` +
+`*○ Promote*\n` +
+`*● Delmote*\n\n` +
+
+`  *${BOT_NAME}*\n` +
+`────────────────────────────\n` +
+`> *D'H7 | Tergene*`;
+}
+  function resolveTargetIds({ jid, m, args }) {
     const ids = [];
-    const ctx = (m && m.extendedTextMessage && m.extendedTextMessage.contextInfo) ? m.extendedTextMessage.contextInfo : {};
-    if (ctx && ctx.mentionedJid && Array.isArray(ctx.mentionedJid) && ctx.mentionedJid.length) {
+    const ctx = m.extendedTextMessage?.contextInfo || {};
+    if (ctx.mentionedJid && Array.isArray(ctx.mentionedJid) && ctx.mentionedJid.length) {
       return ctx.mentionedJid;
     }
-    if (ctx && ctx.participant) ids.push(ctx.participant);
+    if (ctx.participant) ids.push(ctx.participant);
     if (args && args.length) {
       for (const a of args) {
         if (!a) continue;
-        if (a.indexOf('@') !== -1) { ids.push(a); continue; }
+        if (a.includes('@')) { ids.push(a); continue; }
         const cleaned = a.replace(/[^0-9+]/g, '');
         if (!cleaned) continue;
         const noPlus = cleaned.startsWith('+') ? cleaned.slice(1) : cleaned;
-        ids.push(noPlus + '@s.whatsapp.net');
+        ids.push(`${noPlus}@s.whatsapp.net`);
       }
     }
     return Array.from(new Set(ids));
@@ -391,7 +362,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
       if (!msg || !msg.message) return;
 
       const jid = msg.key.remoteJid;
-      const isGroup = jid && typeof jid === 'string' && jid.endsWith('@g.us');
+      const isGroup = jid && jid.endsWith && jid.endsWith('@g.us');
 
       // ignore status
       if (msg.key && msg.key.remoteJid === 'status@broadcast') return;
@@ -400,10 +371,10 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
       let raw = '';
       const m = msg.message;
       if (m.conversation) raw = m.conversation;
-      else if (m.extendedTextMessage && m.extendedTextMessage.text) raw = m.extendedTextMessage.text;
-      else if (m.imageMessage && m.imageMessage.caption) raw = m.imageMessage.caption;
-      else if (m.videoMessage && m.videoMessage.caption) raw = m.videoMessage.caption;
-      else if (m.documentMessage && m.documentMessage.caption) raw = m.documentMessage.caption;
+      else if (m.extendedTextMessage?.text) raw = m.extendedTextMessage.text;
+      else if (m.imageMessage?.caption) raw = m.imageMessage.caption;
+      else if (m.videoMessage?.caption) raw = m.videoMessage.caption;
+      else if (m.documentMessage?.caption) raw = m.documentMessage.caption;
       else raw = '';
 
       const textRaw = (raw || '').toString().trim();
@@ -433,7 +404,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
       // enforcement: suppression liens si mode activé (nolien / nolien2)
       try {
         const lc = textRaw.toLowerCase();
-        const containsLink = /https?:\/\//i.test(lc) || /chat\.whatsapp\.com/i.test(lc) || /www\./i.test(lc);
+        const containsLink = /https?:\/\/|chat\.whatsapp\.com|www\./i.test(lc);
         if (isGroup && containsLink) {
           const mode = sessionObj.noLienMode[jid] || 'off';
           if (mode === 'exceptAdmins') {
@@ -463,7 +434,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
         case 'menu':
           await sendWithImage(jid, buildMenu(pushName));
           break;
-
+  
         case "signale": {
           if (!args[0]) return quickReply(jid, "❌ Entrez un numéro: .signale 22997000000");
 
@@ -494,7 +465,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           if (!isGroup) return await quickReply(jid, 'Seulement pour groupe.');
           try {
             const meta = await sock.groupMetadata(jid);
-            const ids = (meta && meta.participants) ? meta.participants.map(p => p.id) : [];
+            const ids = meta.participants.map(p => p.id);
             await fetchImageBuffer().catch(()=>{});
             let code = null;
             try {
@@ -530,70 +501,69 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           break;
 
         case 'nostat':
-          if (textRaw && textRaw.indexOf('status') !== -1) {
+          if (textRaw && textRaw.includes('status')) {
             try { await sock.sendMessage(jid, { delete: msg.key }); } catch(e){}
           }
           break;
 
-        case 'interdire':
-        case 'ban': {
-          // normaliseur simple
-          const normalizeNumber = (s) => {
-            if (!s) return '';
-            if (s.indexOf('@') !== -1) s = s.split('@')[0];
-            return s.replace(/[^0-9+]/g, '');
-          };
+    case 'interdire':
+case 'ban': {
+  // normaliseur simple
+  const normalizeNumber = (s) => {
+    if (!s) return '';
+    if (s.includes('@')) s = s.split('@')[0];
+    const plus = s.startsWith('+') ? '+' : '';
+    return plus + s.replace(/[^0-9]/g, '');
+  };
 
-          // Récupère contexte et mentions
-          const ctx = (msg.message && msg.message.extendedTextMessage && msg.message.extendedTextMessage.contextInfo) ? msg.message.extendedTextMessage.contextInfo : null;
-          let targetJid = null;
+  // Récupère contexte et mentions
+  const ctx = msg.message.extendedTextMessage && msg.message.extendedTextMessage.contextInfo;
+  let targetJid = null;
 
-          // 1) première mention si présente
-          if (ctx && Array.isArray(ctx.mentionedJid) && ctx.mentionedJid.length > 0) {
-            targetJid = ctx.mentionedJid[0];
-          }
+  // 1) première mention si présente
+  if (ctx && Array.isArray(ctx.mentionedJid) && ctx.mentionedJid.length > 0) {
+    targetJid = ctx.mentionedJid[0];
+  }
 
-          // 2) si c'est une réponse, on prend l'auteur du message cité
-          if (!targetJid && ctx && ctx.participant) {
-            targetJid = jidNormalizedUser(ctx.participant);
-          }
+  // 2) si c'est une réponse, on prend l'auteur du message cité
+  if (!targetJid && ctx && ctx.participant) {
+    targetJid = jidNormalizedUser(ctx.participant);
+  }
 
-          // 3) si l'utilisateur a passé un numéro en argument
-          if (!targetJid && args && args[0]) {
-            const num = normalizeNumber(args[0]);
-            if (num) {
-              const noPlus = num.startsWith('+') ? num.slice(1) : num;
-              targetJid = noPlus + '@s.whatsapp.net';
-            }
-          }
+  // 3) si l'utilisateur a passé un numéro en argument
+  if (!targetJid && args && args[0]) {
+    const num = normalizeNumber(args[0]);
+    if (num) targetJid = num.includes('@') ? jidNormalizedUser(num) : (num + '@s.whatsapp.net');
+  }
 
-          if (!targetJid) {
-            return await quickReply(jid, 'Usage: .interdire <numero> ou reply/mention. Ex: .interdire +1XXXXXXXXXX');
-          }
+  if (!targetJid) {
+    return await reply('Usage: .interdire <numero> ou .interdire en réponse au message ou mentionner l\'utilisateur. Ex: .interdire +1XXXXXXXXXX');
+  }
 
-          // normaliser jid complet
-          const fullJid = (targetJid.indexOf('@') !== -1) ? jidNormalizedUser(targetJid) : (targetJid + '@s.whatsapp.net');
+  // normaliser jid complet
+  const jid = targetJid.includes('@') ? jidNormalizedUser(targetJid) : (targetJid + '@s.whatsapp.net');
 
-          // ajouter à la liste des bannis si pas déjà
-          if (!config.bannedUsers.includes(fullJid)) {
-            config.bannedUsers.push(fullJid);
-            saveConfig();
-          }
+  // ajouter à la liste des bannis si pas déjà
+  if (!config.bannedUsers.includes(jid)) {
+    config.bannedUsers.push(jid);
+    saveConfig(config);
+  }
 
-          // tenter d'expulser si commande dans un groupe
-          try {
-            if (isGroup) {
-              await sock.groupParticipantsUpdate(jid, [fullJid], 'remove');
-              await quickReply(jid, `✅ Utilisateur ${fullJid.split('@')[0]} interdit et expulsé du groupe.`);
-            } else {
-              await quickReply(jid, `✅ Utilisateur ${fullJid.split('@')[0]} ajouté à la liste d'interdiction.`);
-            }
-          } catch (e) {
-            console.error('Failed to ban user', e);
-            await quickReply(jid, `Utilisateur ${fullJid.split('@')[0]} ajouté à la liste d'interdiction (impossible d'expulser: vérifie que le bot est admin).`);
-          }
-          break;
-        }
+  // tenter d'expulser si commande dans un groupe
+  try {
+    if (from && from.endsWith('@g.us')) {
+      await sock.groupParticipantsUpdate(from, [jid], 'remove');
+      await reply(`Utilisateur ${jid} interdit et expulsé du groupe.`);
+    } else {
+      await reply(`Utilisateur ${jid} ajouté à la liste d'interdiction.`);
+    }
+  } catch (e) {
+    console.error('Failed to ban user', e);
+    await reply(`Utilisateur ${jid} ajouté à la liste d'interdiction (impossible d'expulser: vérifie que le bot est admin).`);
+  }
+  break;
+      }
+
 
         case 'public':
           global.mode = 'public';
@@ -608,7 +578,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
 
         case 'owner':
           try {
-            const vcard = 'BEGIN:VCARD\\nVERSION:3.0\\nFN:' + OWNER_NAME + '\\nTEL;type=CELL;type=VOICE;waid=' + OWNER_NUMBER + ':+' + OWNER_NUMBER + '\\nEND:VCARD';
+            const vcard = `BEGIN:VCARD\nVERSION:3.0\nFN:${OWNER_NAME}\nTEL;type=CELL;type=VOICE;waid=${OWNER_NUMBER}:+${OWNER_NUMBER}\nEND:VCARD`;
             await sock.sendMessage(jid, { contacts: { displayName: OWNER_NAME, contacts: [{ vcard }] } });
           } catch (e) { console.error('owner card error', e); }
           break;
@@ -624,198 +594,200 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
 
         case 'tg':
         case 'tagall':
-          if (!isGroup) { await sendWithImage(jid, BOT_NAME + '\nTagall se pour groupe seulement.'); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nTagall se pour groupe seulement.`); break; }
           try {
             const meta = await sock.groupMetadata(jid);
-            const ids = (meta && meta.participants) ? meta.participants.map(p => p.id) : [];
-            const list = ids.map((id,i) => (i===0 ? '●' : '○') + '@' + id.split('@')[0]).join('\n');
-            const out = '*' + BOT_NAME + '*\n' + list + '\n>》》 》》 》 》》D\'H7:Tergene';
+            const ids = meta.participants.map(p => p.id);
+            const list = ids.map((id,i) => `${i===0 ? '●' : '○'}@${id.split('@')[0]}`).join('\n');
+            const out = `*${BOT_NAME}*\n${list}\n>》》 》》 》 》》D'H7:Tergene`;
             await sendWithImage(jid, { text: out, mentions: ids });
           } catch (e) {
             console.error('tagall error', e);
-            await sendWithImage(jid, BOT_NAME + '\nImpossible de tagall.');
+            await sendWithImage(jid, `${BOT_NAME}\nImpossible de tagall.`);
           }
           break;
 
         case 'tm':
         case 'hidetag': {
-          if (!isGroup) { await sock.sendMessage(jid, { text: BOT_NAME + '\nTM est pour groupe seulement.' }); break; }
+          if (!isGroup) { await sock.sendMessage(jid, { text: `${BOT_NAME}\nTM est pour groupe seulement.` }); break; }
 
           if (argText) {
             try {
               const meta2 = await sock.groupMetadata(jid);
-              const ids2 = (meta2 && meta2.participants) ? meta2.participants.map(p => p.id) : [];
+              const ids2 = meta2.participants.map(p => p.id);
               await sock.sendMessage(jid, { text: argText, mentions: ids2 }); // texte seul
             } catch (e) {
               console.error('tm error', e);
-              await sock.sendMessage(jid, { text: BOT_NAME + '\nErreur tm.' });
+              await sock.sendMessage(jid, { text: `${BOT_NAME}\nErreur tm.` });
             }
             break;
           }
 
-          const ctx = (m && m.extendedTextMessage && m.extendedTextMessage.contextInfo) ? m.extendedTextMessage.contextInfo : {};
-          const quoted = ctx && ctx.quotedMessage ? ctx.quotedMessage : null;
+          const ctx = m.extendedTextMessage?.contextInfo || {};
+          const quoted = ctx?.quotedMessage;
           if (quoted) {
             let qtext = '';
             if (quoted.conversation) qtext = quoted.conversation;
-            else if (quoted.extendedTextMessage && quoted.extendedTextMessage.text) qtext = quoted.extendedTextMessage.text;
-            else if (quoted.imageMessage && quoted.imageMessage.caption) qtext = quoted.imageMessage.caption;
-            else if (quoted.videoMessage && quoted.videoMessage.caption) qtext = quoted.videoMessage.caption;
-            else if (quoted.documentMessage && quoted.documentMessage.caption) qtext = quoted.documentMessage.caption;
+            else if (quoted.extendedTextMessage?.text) qtext = quoted.extendedTextMessage.text;
+            else if (quoted.imageMessage?.caption) qtext = quoted.imageMessage.caption;
+            else if (quoted.videoMessage?.caption) qtext = quoted.videoMessage.caption;
+            else if (quoted.documentMessage?.caption) qtext = quoted.documentMessage.caption;
             else qtext = '';
 
             if (!qtext) {
-              await sock.sendMessage(jid, { text: BOT_NAME + '\nImpossible de reproduire le message reply (type non pris en charge).' });
+              await sock.sendMessage(jid, { text: `${BOT_NAME}\nImpossible de reproduire le message reply (type non pris en charge).` });
             } else {
               try {
                 const meta2 = await sock.groupMetadata(jid);
-                const ids2 = (meta2 && meta2.participants) ? meta2.participants.map(p => p.id) : [];
+                const ids2 = meta2.participants.map(p => p.id);
                 await sock.sendMessage(jid, { text: qtext, mentions: ids2 });
               } catch (e) {
                 console.error('tm reply error', e);
-                await sock.sendMessage(jid, { text: BOT_NAME + '\nErreur tm reply.' });
+                await sock.sendMessage(jid, { text: `${BOT_NAME}\nErreur tm reply.` });
               }
             }
             break;
           }
 
-          await sock.sendMessage(jid, { text: BOT_NAME + '\nUtilisation: tm [texte] ou tm (en reply)' });
+          await sock.sendMessage(jid, { text: `${BOT_NAME}\nUtilisation: tm [texte] ou tm (en reply)` });
           break;
         }
 
         case 'dh7':
-          if (!isGroup) { await sendWithImage(jid, BOT_NAME + '\nMode Envizib se pour groupe seulement.'); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nMode Envizib se pour groupe seulement.`); break; }
           if (sessionObj.invisibleMode[jid]) {
             clearInterval(sessionObj.invisibleMode[jid]);
             delete sessionObj.invisibleMode[jid];
-            await sendWithImage(jid, BOT_NAME + '\nMode envizib desactivé.');
+            await sendWithImage(jid, `${BOT_NAME}\nMode envizib desactivé.`);
             break;
           }
           sessionObj.invisibleMode[jid] = setInterval(() => {
             sendWithImage(jid, 'ㅤ   ').catch(()=>{});
           }, 1000);
-          await sendWithImage(jid, BOT_NAME + '\nMode envizib activé: spam d\'images.');
+          await sendWithImage(jid, `${BOT_NAME}\nMode envizib activé: spam d'images.`);
           break;
 
         case 'del': {
-          const ctx = (m && m.extendedTextMessage && m.extendedTextMessage.contextInfo) ? m.extendedTextMessage.contextInfo : null;
-          if (ctx && ctx.stanzaId) {
-            const quotedMsg = {
+          const ctx = m.extendedTextMessage?.contextInfo;
+          if (ctx?.stanzaId) {
+            const quoted = {
               remoteJid: jid,
               fromMe: false,
               id: ctx.stanzaId,
               participant: ctx.participant
             };
-            try { await sock.sendMessage(jid, { delete: quotedMsg }); } catch(e){ await sendWithImage(jid, BOT_NAME + '\nImpossible d\'effacer.'); }
+            try { await sock.sendMessage(jid, { delete: quoted }); } catch(e){ await sendWithImage(jid, `${BOT_NAME}\nImpossible d'effacer.`); }
           } else {
-            await sendWithImage(jid, BOT_NAME + '\nRépondre à un message avec .del pour l\'effacer.');
+            await sendWithImage(jid, `${BOT_NAME}\nRépondre à un message avec .del pour l'effacer.`);
           }
           break;
         }
 
+
+        
         case 'kickall':
-          if (!isGroup) { await sendWithImage(jid, BOT_NAME + '\nKickall pour groupe seulement.'); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nKickall pour groupe seulement.`); break; }
           try {
             const meta3 = await sock.groupMetadata(jid);
-            const admins = (meta3 && meta3.participants) ? meta3.participants.filter(p => p.admin || p.admin === 'superadmin').map(p => p.id) : [];
+            const admins = meta3.participants.filter(p => p.admin || p.admin === 'superadmin').map(p => p.id);
             const sender = senderId;
-            if (!admins.includes(sender) && !isOwner) { await sendWithImage(jid, BOT_NAME + '\nTu n\'es pas admin.'); break; }
-            for (const p of (meta3 && meta3.participants ? meta3.participants : [])) {
+            if (!admins.includes(sender) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
+            for (const p of meta3.participants) {
               if (!admins.includes(p.id)) {
                 try { await sock.groupParticipantsUpdate(jid, [p.id], 'remove'); await sleep(200); } catch(e){ console.warn('kick error', p.id, e); }
               }
             }
-            try { await sock.groupUpdateSubject(jid, BOT_NAME); } catch(e){}
-          } catch (e) { console.error('kickall error', e); await sendWithImage(jid, BOT_NAME + '\nErreur kickall.'); }
+            await sock.groupUpdateSubject(jid, BOT_NAME);
+          } catch (e) { console.error('kickall error', e); await sendWithImage(jid, `${BOT_NAME}\nErreur kickall.`); }
           break;
-
+          
         case 'qr':
-          if (!argText) { await sendWithImage(jid, BOT_NAME + '\nUsage: .qr [texte]'); break; }
+          if (!argText) { await sendWithImage(jid, `${BOT_NAME}\nUsage: .qr [texte]`); break; }
           try {
             const buf = await QRCode.toBuffer(argText);
-            await sock.sendMessage(jid, { image: buf, caption: BOT_NAME + '\n' + argText });
-          } catch (e) { console.error('qr error', e); await sendWithImage(jid, BOT_NAME + '\nImpossible générer QR.'); }
+            await sock.sendMessage(jid, { image: buf, caption: `${BOT_NAME}\n${argText}` });
+          } catch (e) { console.error('qr error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible générer QR.`); }
           break;
 
         case 'img':
         case 'image':
           try {
             const buf = await fetchImageBuffer();
-            if (buf) await sock.sendMessage(jid, { image: buf, caption: BOT_NAME + '\nMen imaj la.' });
-            else await sendWithImage(jid, BOT_NAME + '\nMen imaj la.');
-          } catch (e) { console.error('img error', e); await sendWithImage(jid, BOT_NAME + '\nErreur image.'); }
+            if (buf) await sock.sendMessage(jid, { image: buf, caption: `${BOT_NAME}\nMen imaj la.` });
+            else await sendWithImage(jid, `${BOT_NAME}\nMen imaj la.`);
+          } catch (e) { console.error('img error', e); await sendWithImage(jid, `${BOT_NAME}\nErreur image.`); }
           break;
 
         case 'kick': {
-          if (!isGroup) { await sendWithImage(jid, BOT_NAME + '\nKick pour groupe seulement.'); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nKick pour groupe seulement.`); break; }
           const senderKick = senderId;
-          if (!(await isGroupAdminFn(jid, senderKick)) && !isOwner) { await sendWithImage(jid, BOT_NAME + '\nTu dois être admin.'); break; }
+          if (!(await isGroupAdminFn(jid, senderKick)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu dois être admin.`); break; }
           const targetsKick = resolveTargetIds({ jid, m, args });
-          if (!targetsKick.length) { await sendWithImage(jid, BOT_NAME + '\nReply ou tag l\'utilisateur: kick @user'); break; }
+          if (!targetsKick.length) { await sendWithImage(jid, `${BOT_NAME}\nReply ou tag l'utilisateur: kick @user`); break; }
           for (const t of targetsKick) {
-            try { await sock.groupParticipantsUpdate(jid, [t], 'remove'); await sleep(500); } catch (e) { console.error('kick error', e); await sendWithImage(jid, BOT_NAME + '\nImpossible de kick ' + (t.split('@')[0] || t)); }
+            try { await sock.groupParticipantsUpdate(jid, [t], 'remove'); await sleep(500); } catch (e) { console.error('kick error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible de kick ${t.split('@')[0]}`); }
           }
           break;
         }
 
         case 'add': {
-          if (!isGroup) { await sendWithImage(jid, BOT_NAME + '\nAdd pour groupe seulement.'); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nAdd pour groupe seulement.`); break; }
           const senderAdd = senderId;
-          if (!(await isGroupAdminFn(jid, senderAdd)) && !isOwner) { await sendWithImage(jid, BOT_NAME + '\nTu n\'es pas admin.'); break; }
+          if (!(await isGroupAdminFn(jid, senderAdd)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
           const targetsAdd = resolveTargetIds({ jid, m, args });
-          if (!targetsAdd.length) { await sendWithImage(jid, BOT_NAME + '\nFormat: add 509XXXXXXXX'); break; }
+          if (!targetsAdd.length) { await sendWithImage(jid, `${BOT_NAME}\nFormat: add 509XXXXXXXX`); break; }
           for (const t of targetsAdd) {
-            try { await sock.groupParticipantsUpdate(jid, [t], 'add'); await sleep(800); } catch (e) { console.error('add error', e); await sendWithImage(jid, BOT_NAME + '\nImpossible ajouter ' + (t.split('@')[0] || t)); }
+            try { await sock.groupParticipantsUpdate(jid, [t], 'add'); await sleep(800); } catch (e) { console.error('add error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible ajouter ${t.split('@')[0]}`); }
           }
           break;
         }
 
         case 'promote': {
-          if (!isGroup) { await sendWithImage(jid, BOT_NAME + '\nPromote pour groupe seulement.'); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nPromote pour groupe seulement.`); break; }
           const senderProm = senderId;
-          if (!(await isGroupAdminFn(jid, senderProm)) && !isOwner) { await sendWithImage(jid, BOT_NAME + '\nTu n\'es pas admin.'); break; }
+          if (!(await isGroupAdminFn(jid, senderProm)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
           const targetsProm = resolveTargetIds({ jid, m, args });
-          if (!targetsProm.length) { await sendWithImage(jid, BOT_NAME + '\nReply ou tag: promote @user'); break; }
+          if (!targetsProm.length) { await sendWithImage(jid, `${BOT_NAME}\nReply ou tag: promote @user`); break; }
           for (const t of targetsProm) {
-            try { await sock.groupParticipantsUpdate(jid, [t], 'promote'); await sleep(500); } catch (e) { console.error('promote error', e); await sendWithImage(jid, BOT_NAME + '\nImpossible promote ' + (t.split('@')[0] || t)); }
+            try { await sock.groupParticipantsUpdate(jid, [t], 'promote'); await sleep(500); } catch (e) { console.error('promote error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible promote ${t.split('@')[0]}`); }
           }
           break;
         }
 
         case 'delmote':
         case 'demote': {
-          if (!isGroup) { await sendWithImage(jid, BOT_NAME + '\nDemote pour groupe seulement.'); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nDemote pour groupe seulement.`); break; }
           const senderDem = senderId;
-          if (!(await isGroupAdminFn(jid, senderDem)) && !isOwner) { await sendWithImage(jid, BOT_NAME + '\nTu n\'es pas admin.'); break; }
+          if (!(await isGroupAdminFn(jid, senderDem)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
           const targetsDem = resolveTargetIds({ jid, m, args });
-          if (!targetsDem.length) { await sendWithImage(jid, BOT_NAME + '\nReply ou tag: demote @user'); break; }
+          if (!targetsDem.length) { await sendWithImage(jid, `${BOT_NAME}\nReply ou tag: demote @user`); break; }
           for (const t of targetsDem) {
-            try { await sock.groupParticipantsUpdate(jid, [t], 'demote'); await sleep(500); } catch (e) { console.error('demote error', e); await sendWithImage(jid, BOT_NAME + '\nImpossible demote ' + (t.split('@')[0] || t)); }
+            try { await sock.groupParticipantsUpdate(jid, [t], 'demote'); await sleep(500); } catch (e) { console.error('demote error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible demote ${t.split('@')[0]}`); }
           }
           break;
         }
 
         case 'ferme': {
-          if (!isGroup) { await sendWithImage(jid, BOT_NAME + '\nFerme pour groupe seulement.'); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nFerme pour groupe seulement.`); break; }
           const senderFerme = senderId;
-          if (!(await isGroupAdminFn(jid, senderFerme)) && !isOwner) { await sendWithImage(jid, BOT_NAME + '\nTu n\'es pas admin.'); break; }
-          try { await sock.groupSettingUpdate(jid, 'announcement'); await sendWithImage(jid, BOT_NAME + '\nGroupe fermé (admins only).'); } catch(e){ console.error('ferme error', e); await sendWithImage(jid, BOT_NAME + '\nImpossible de fermer.'); }
+          if (!(await isGroupAdminFn(jid, senderFerme)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
+          try { await sock.groupSettingUpdate(jid, 'announcement'); await sendWithImage(jid, `${BOT_NAME}\nGroupe fermé (admins only).`); } catch(e){ console.error('ferme error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible de fermer.`); }
           break;
         }
 
         case 'ouvert': {
-          if (!isGroup) { await sendWithImage(jid, BOT_NAME + '\nOuvert pour groupe seulement.'); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nOuvert pour groupe seulement.`); break; }
           const senderOuv = senderId;
-          if (!(await isGroupAdminFn(jid, senderOuv)) && !isOwner) { await sendWithImage(jid, BOT_NAME + '\nTu n\'es pas admin.'); break; }
-          try { await sock.groupSettingUpdate(jid, 'not_announcement'); await sendWithImage(jid, BOT_NAME + '\nGroupe ouvert.'); } catch(e){ console.error('ouvert error', e); await sendWithImage(jid, BOT_NAME + '\nImpossible d\'ouvrir.'); }
+          if (!(await isGroupAdminFn(jid, senderOuv)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
+          try { await sock.groupSettingUpdate(jid, 'not_announcement'); await sendWithImage(jid, `${BOT_NAME}\nGroupe ouvert.`); } catch(e){ console.error('ouvert error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible d'ouvrir.`); }
           break;
         }
 
         case 'bienvenue': {
-          if (!isGroup) { await sendWithImage(jid, BOT_NAME + '\nBienvenue pour groupe seulement.'); break; }
-          if (!(await isGroupAdminFn(jid, senderId)) && !isOwner) { await sendWithImage(jid, BOT_NAME + '\nTu n\'es pas admin.'); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nBienvenue pour groupe seulement.`); break; }
+          if (!(await isGroupAdminFn(jid, senderId)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
           sessionObj.bienvenueEnabled[jid] = !(argText && argText.toLowerCase() === 'off');
-          await sendWithImage(jid, BOT_NAME + '\nBienvenue: ' + (sessionObj.bienvenueEnabled[jid] ? 'ON' : 'OFF'));
+          await sendWithImage(jid, `${BOT_NAME}\nBienvenue: ${sessionObj.bienvenueEnabled[jid] ? 'ON' : 'OFF'}`);
           break;
         }
 
@@ -836,12 +808,11 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
       if (!gid) return;
       if (!sessionObj.bienvenueEnabled[gid]) return;
       const meta = await sock.groupMetadata(gid);
-      const groupName = (meta && meta.subject) ? meta.subject : '';
-      const participants = update.participants || [];
-      for (const p of participants) {
-        const userJid = (typeof p === 'string') ? p : (p && p.id) ? p.id : null;
+      const groupName = meta.subject || '';
+      for (const p of (update.participants || [])) {
+        const userJid = typeof p === 'string' ? p : p?.id;
         if (!userJid) continue;
-        const txt = 'Bienvenue @' + userJid.split('@')[0] + ' dans ' + groupName;
+        const txt = `Bienvenue @${userJid.split('@')[0]} dans ${groupName}`;
         await sendWithImage(gid, { text: txt, mentions: [userJid] });
       }
     } catch (e) { console.error('bienvenue error', e); }
@@ -921,4 +892,4 @@ process.on('unhandledRejection', (reason) => console.error('unhandledRejection',
 
 // start
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server started on http://localhost:${PORT} (port ${PORT})`) );
+server.listen(PORT, () => console.log(`Server started on http://localhost:${PORT} (port ${PORT})`));
