@@ -3,7 +3,7 @@ const urlsToCache = [
   "/",
   "/index.html",
   "/manifest.json",
-  "/https://res.cloudinary.com/dckwrqrur/image/upload/v1757217868/tf-stream-url/file_00000000cd7c62439492d8f6bb737dfd_eaj4tl.png"
+  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757217868/tf-stream-url/file_00000000cd7c62439492d8f6bb737dfd_eaj4tl.png"
 ];
 
 // Installation et mise en cache
