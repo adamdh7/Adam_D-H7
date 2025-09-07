@@ -4,6 +4,13 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Adam_D'H7</title>
+  <link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0b74da">
+
+<!-- iOS support -->
+<link rel="apple-touch-icon" href="https://res.cloudinary.com/dckwrqrur/image/upload/v1757217868/tf-stream-url/file_00000000cd7c62439492d8f6bb737dfd_eaj4tl.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <style>
     :root{--bg:#0f1724;--card:#0b1220;--accent:#06b6d4;--muted:#94a3b8;color-scheme:dark}
     body{font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;background:linear-gradient(180deg,#071028 0%, #071a2a 100%);color:white;margin:0;padding:28px}
@@ -180,6 +187,13 @@
         sessionsList.appendChild(el);
       });
     });
+  </script>
+  <script>
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("service-worker.js")
+      .then(reg => console.log("Service Worker enregistré:", reg.scope))
+      .catch(err => console.error("Service Worker erreur:", err));
+  }
   </script>
 </body>
   </html>
