@@ -9,14 +9,14 @@
   "orientation": "portrait",
   "icons": [
     {
-      "src": "logo192.png",
+      "src": "https://res.cloudinary.com/dckwrqrur/image/upload/v1757217868/tf-stream-url/file_00000000cd7c62439492d8f6bb737dfd_eaj4tl.png",
       "sizes": "192x192",
-      "type": "https://res.cloudinary.com/dckwrqrur/image/upload/v1757217868/tf-stream-url/file_00000000cd7c62439492d8f6bb737dfd_eaj4tl.png"
+      "type": "image/png"
     },
     {
-      "src": "logo512.png",
+      "src": "https://res.cloudinary.com/dckwrqrur/image/upload/v1757217868/tf-stream-url/file_00000000cd7c62439492d8f6bb737dfd_eaj4tl.png",
       "sizes": "512x512",
-      "type": "https://res.cloudinary.com/dckwrqrur/image/upload/v1757217868/tf-stream-url/file_00000000cd7c62439492d8f6bb737dfd_eaj4tl.png"
+      "type": "image/png"
     }
   ]
 }
