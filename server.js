@@ -112,9 +112,10 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     dir,
     restarting: false,
     cachedImageBuffer: null,
-    invisibleMode: {},        // map jid -> intervalId (pour dh7)
+    invisibleMode: {},        
     bienvenueEnabled: {},     // map jid -> boolean
-    noLienMode: {},           // map jid -> 'off' | 'exceptAdmins' | 'all'
+    noLienMode: {},
+    pendingJoinRequests: {},// map jid -> 'off' | 'exceptAdmins' | 'all'
     sessionOwnerNumber,       // numéro (string) de la personne qui a crée/la session (scanner)
     botId: null,              // rempli après connexion
   };
@@ -170,7 +171,61 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     } catch (err) {
       console.warn(`[${sessionId}] image url send failed:`, err);
     }
+// ajoute sa pi wo nan fichye a (once)
+const CONFIG_PATH = path.join(__dirname, 'config.json');
+let config = { bannedUsers: [] };
+try {
+  if (fs.existsSync(CONFIG_PATH)) {
+    config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  } else {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+  }
+} catch (e) { console.warn('config load error', e); }
+function saveConfig(c) {
+  try {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2));
+    config = c;
+  } catch (e) { console.error('saveConfig error', e); }
+}
 
+function jidNormalizedUser(j) {
+  if (!j) return '';
+  const only = j.includes('@') ? j.split('@')[0] : j.replace(/[^0-9]/g,'');
+  return `${only}@s.whatsapp.net`;
+        }
+    // capture les "join requests" (selon ce que renvoie ta version de Baileys)
+sock.ev.on('group-participants.update', async (update) => {
+  try {
+    const gid = update.id || update.jid || update.groupId;
+    if (!gid) return;
+
+    if (!sessionObj.pendingJoinRequests[gid]) sessionObj.pendingJoinRequests[gid] = new Set();
+
+    // Selon la version, action peut être 'request', 'invite' etc. On tolère plusieurs mots.
+    const action = update.action || update[0] || '';
+    const participants = update.participants || [];
+
+    // Si c'est une demande d'adhésion, on mémorise
+    if (['request', 'join_request', 'request_join', 'invite'].includes(action)) {
+      for (const p of participants) {
+        const pid = (typeof p === 'string') ? p : (p?.id || '');
+        if (pid) sessionObj.pendingJoinRequests[gid].add(pid);
+      }
+    }
+
+    // Si participants ont été effectivement ajoutés/retirés, on nettoie la liste d'attente
+    if (['add', 'remove', 'join', 'invite', 'promote', 'demote'].includes(action)) {
+      for (const p of participants) {
+        const pid = (typeof p === 'string') ? p : (p?.id || '');
+        if (pid && sessionObj.pendingJoinRequests[gid]) {
+          sessionObj.pendingJoinRequests[gid].delete(pid);
+        }
+      }
+    }
+  } catch (e) {
+    console.error('pendingJoinRequests handler error', e);
+  }
+});
     const msg = { text };
     if (mentions) msg.mentions = mentions;
     if (quoted) msg.quoted = quoted;
@@ -507,64 +562,92 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           break;
 
     case 'interdire':
+case// replace original .interdire case with this inside your switch
+case 'interdire':
 case 'ban': {
-  // normaliseur simple
   const normalizeNumber = (s) => {
     if (!s) return '';
     if (s.includes('@')) s = s.split('@')[0];
-    const plus = s.startsWith('+') ? '+' : '';
-    return plus + s.replace(/[^0-9]/g, '');
+    const cleaned = s.replace(/[^0-9+]/g, '');
+    const noPlus = cleaned.startsWith('+') ? cleaned.slice(1) : cleaned;
+    return noPlus ? `${noPlus}@s.whatsapp.net` : '';
   };
 
-  // Récupère contexte et mentions
-  const ctx = msg.message.extendedTextMessage && msg.message.extendedTextMessage.contextInfo;
+  const ctx = m.extendedTextMessage && m.extendedTextMessage.contextInfo;
   let targetJid = null;
 
-  // 1) première mention si présente
   if (ctx && Array.isArray(ctx.mentionedJid) && ctx.mentionedJid.length > 0) {
     targetJid = ctx.mentionedJid[0];
   }
 
-  // 2) si c'est une réponse, on prend l'auteur du message cité
   if (!targetJid && ctx && ctx.participant) {
     targetJid = jidNormalizedUser(ctx.participant);
   }
 
-  // 3) si l'utilisateur a passé un numéro en argument
   if (!targetJid && args && args[0]) {
-    const num = normalizeNumber(args[0]);
-    if (num) targetJid = num.includes('@') ? jidNormalizedUser(num) : (num + '@s.whatsapp.net');
+    targetJid = normalizeNumber(args[0]);
   }
 
   if (!targetJid) {
-    return await reply('Usage: .interdire <numero> ou .interdire en réponse au message ou mentionner l\'utilisateur. Ex: .interdire +1XXXXXXXXXX');
+    return await quickReply(jid, "Usage: .interdire <numero> ou reply/mention. Ex: .interdire +509XXXXXXXX");
   }
 
-  // normaliser jid complet
-  const jid = targetJid.includes('@') ? jidNormalizedUser(targetJid) : (targetJid + '@s.whatsapp.net');
+  const targetNormalized = targetJid.includes('@') ? jidNormalizedUser(targetJid) : `${targetJid}@s.whatsapp.net`;
 
-  // ajouter à la liste des bannis si pas déjà
-  if (!config.bannedUsers.includes(jid)) {
-    config.bannedUsers.push(jid);
+  if (!config.bannedUsers.includes(targetNormalized)) {
+    config.bannedUsers.push(targetNormalized);
     saveConfig(config);
   }
 
-  // tenter d'expulser si commande dans un groupe
   try {
-    if (from && from.endsWith('@g.us')) {
-      await sock.groupParticipantsUpdate(from, [jid], 'remove');
-      await reply(`Utilisateur ${jid} interdit et expulsé du groupe.`);
+    if (jid && jid.endsWith('@g.us')) {
+      await sock.groupParticipantsUpdate(jid, [targetNormalized], 'remove');
+      await quickReply(jid, `Utilisateur ${targetNormalized.split('@')[0]} interdit et expulsé du groupe.`);
     } else {
-      await reply(`Utilisateur ${jid} ajouté à la liste d'interdiction.`);
+      await quickReply(jid, `Utilisateur ${targetNormalized.split('@')[0]} ajouté à la liste d'interdiction.`);
     }
   } catch (e) {
     console.error('Failed to ban user', e);
-    await reply(`Utilisateur ${jid} ajouté à la liste d'interdiction (impossible d'expulser: vérifie que le bot est admin).`);
+    await quickReply(jid, `Utilisateur ${targetNormalized.split('@')[0]} ajouté à la liste d'interdiction (impossible d'expulser: vérifie que le bot est admin).`);
   }
   break;
-      }
+    }
 
+case 'approuvé':
+case 'approuvéall':
+case 'approuvé all':
+case 'apv': {
+  if (!isGroup) return await quickReply(jid, 'Cette commande fonctionne seulement en groupe.');
+  // vérif admin/owner
+  if (!(await isGroupAdminFn(jid, senderId)) && !isOwner) {
+    return await quickReply(jid, 'Seuls les admins/owner peuvent approuver toutes les demandes.');
+  }
 
+  const pendingSet = sessionObj.pendingJoinRequests[jid] || new Set();
+  const pending = Array.from(pendingSet);
+  if (!pending.length) {
+    return await quickReply(jid, 'Aucune demande en attente à approuver.');
+  }
+
+  let succeeded = 0, failed = 0;
+  for (const p of pending) {
+    try {
+      // tentative d'ajout (doit être admin)
+      await sock.groupParticipantsUpdate(jid, [p], 'add');
+      succeeded++;
+      await sleep(500); // petites pauses pour éviter rate limits
+    } catch (e) {
+      console.warn(`[${sessionId}] approve failed for ${p}`, e);
+      failed++;
+    }
+  }
+
+  // nettoyage
+  sessionObj.pendingJoinRequests[jid] = new Set();
+
+  await quickReply(jid, `✅ Approuvé: ${succeeded} utilisateurs. Échecs: ${failed}.`);
+  break;
+}
         case 'public':
           global.mode = 'public';
           await quickReply(jid, 'Mode: public (tout le monde peut utiliser les commandes non-admin).');
