@@ -20,7 +20,9 @@ const {
 const app = express();
 const server = http.createServer(app);
 
+
 global.mode = global.mode || 'public';
+
 
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://adam-d-h7-q8qo.onrender.com';
 const io = new Server(server, {
@@ -32,14 +34,18 @@ const io = new Server(server, {
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/health', (req, res) => res.status(200).send('ok'));
 
+
 const SESSIONS_BASE = path.join(__dirname, 'sessions');
 if (!fs.existsSync(SESSIONS_BASE)) fs.mkdirSync(SESSIONS_BASE, { recursive: true });
+
 
 const OWNER_NAME = 'Adam_DH7';
 const OWNER_NUMBER = '50935492574';
 const BOT_NAME = 'Adam_DH7';
 
+// pa mete lot si non wap ban bueno...
 const IMAGE_URL = 'https://res.cloudinary.com/dckwrqrur/image/upload/v1756270884/tf-stream-url/77e5009ff1d7c9cd0cbc8a47c6a15caf_0_xokhwz.jpg';
+
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 function nextAuthFolder() {
@@ -52,33 +58,7 @@ function nextAuthFolder() {
   return `auth_info${next}`;
 }
 
-const sessions = {};
-
-const CONFIG_PATH = path.join(__dirname, 'config.json');
-let config = { bannedUsers: [] };
-try {
-  if (fs.existsSync(CONFIG_PATH)) {
-    config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-  } else {
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
-  }
-} catch (e) {
-  console.warn('config load error', e);
-}
-function saveConfig(c) {
-  try {
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(c, null, 2));
-    config = c;
-  } catch (e) {
-    console.error('saveConfig error', e);
-  }
-}
-
-function jidNormalizedUser(j) {
-  if (!j) return '';
-  const only = j.includes('@') ? j.split('@')[0] : j.replace(/[^0-9]/g,'');
-  return `${only}@s.whatsapp.net`;
-}
+const sessions = {}; // sessions en mémoire
 
 async function startBaileysForSession(sessionId, folderName, socket, opts = { attempt: 0 }) {
   if (sessions[sessionId] && sessions[sessionId].sock) return sessions[sessionId];
@@ -86,6 +66,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
   const dir = path.join(SESSIONS_BASE, folderName);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
+  // charge auth state
   let state, saveCreds;
   try {
     const auth = await useMultiFileAuthState(dir);
@@ -97,6 +78,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     throw err;
   }
 
+  // récupère meta.json (créé par create_session) pour déterminer qui a scanné le QR[epi ban yo si yo pa ofrim kek truc]
   let sessionOwnerNumber = null;
   try {
     const metaPath = path.join(dir, 'meta.json');
@@ -107,15 +89,16 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
       }
     }
   } catch (e) {
-    console.warn(`[${sessionId}] impossible to read meta.json`, e);
+    console.warn(`[${sessionId}] impossible de lire meta.json`, e);
   }
 
+  // version WA best-effort
   let version = undefined;
   try {
     const res = await fetchLatestBaileysVersion();
     if (res && res.version) version = res.version;
   } catch (err) {
-    console.warn(`[${sessionId}] fetchLatestBaileysVersion failed`);
+    console.warn(`[${sessionId}] fetchLatestBaileysVersion failed — proceeding without explicit version`);
   }
 
   const logger = pino({ level: 'silent' });
@@ -131,14 +114,15 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     invisibleMode: {},
     bienvenueEnabled: {},
     noLienMode: {},
-    pendingJoinRequests: {},
     sessionOwnerNumber,
     botId: null,
   };
   sessions[sessionId] = sessionObj;
 
+  // persist creds
   sock.ev.on('creds.update', saveCreds);
 
+  // helper: cache image buffer
   async function fetchImageBuffer() {
     if (sessionObj.cachedImageBuffer) return sessionObj.cachedImageBuffer;
     try {
@@ -151,6 +135,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
       return null;
     }
   }
+
 
   async function sendWithImage(jid, content, options = {}) {
     const text = (typeof content === 'string') ? content : (content.text || '');
@@ -195,6 +180,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     return sendWithImage(jid, text, opts);
   }
 
+  // helpers destinés au traitement de messages
   function getSenderId(msg) {
     return (msg.key && msg.key.participant) ? msg.key.participant : msg.key.remoteJid;
   }
@@ -216,6 +202,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     }
   }
 
+  // --- TRACE: connection.update handler (QR, open, close, restart) --- bof flemme pks map mete sa bonm gen pam apa ts.
   sock.ev.on('connection.update', async (update) => {
     try {
       const { connection, qr, lastDisconnect } = update;
@@ -229,23 +216,25 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
       }
 
       if (connection === 'open') {
+        // tente remplir botId
         try {
           if (sock.user && (sock.user.id || sock.user.jid)) {
             sessionObj.botId = (sock.user.id || sock.user.jid);
           } else if (sock.user) {
             sessionObj.botId = sock.user;
           }
-        } catch (e) {}
+        } catch (e) { /* ignore */ }
 
+        // --- NOUVEAU : reconnaître automatiquement l'utilisateur qui a scanné le QR comme owner de la session --- mais bordel on a 50% chance que ça marche its abi fr
         try {
           const me = sock.user?.id || sock.user?.jid || (sock.user && sock.user[0] && sock.user[0].id);
           if (me) {
             const ownerNum = (typeof me === 'string' && me.includes('@')) ? me.split('@')[0] : String(me);
             sessionObj.sessionOwnerNumber = ownerNum.replace(/\D/g, '');
-            console.log(`[${sessionId}] sessionOwnerNumber detected: ${sessionObj.sessionOwnerNumber}`);
+            console.log(`[${sessionId}] sessionOwnerNumber détecté automatiquement: ${sessionObj.sessionOwnerNumber}`);
           }
         } catch (e) {
-          console.warn(`[${sessionId}] cannot detect session owner`, e);
+          console.warn(`[${sessionId}] impossible de détecter session owner automatiquement`, e);
         }
 
         console.log(`[${sessionId}] Connected (folder=${folderName})`);
@@ -301,9 +290,48 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
   });
 
   function buildMenu(pushName = 'Utilisateur') {
-    return `*○ Menu*\n\n  *${BOT_NAME}*\n────────────────────────────\n🚶🏻‍♂️ 𝐔𝐬𝐞𝐫: "${pushName}"\n🥀 𝐎𝐰𝐧𝐞𝐫: *${OWNER_NAME}*\n\n────────────────────────────\n📂 𝐂𝐨𝐦𝐦𝐚𝐧𝐝𝐞𝐬:\n────────────────────────────\n\n🔱 *Général*\n*● Menu*\n*● Ban*\n*○ Owner*\n*○ Signale*\n*● Qr [texte]*\n\n🔱 *Groupe*\n*○ Lien*\n*● Tagall*\n*○ Hidetag*\n*● Kick*\n*○ Add*\n*● Promote*\n*○ Demote*\n*● Kickall*\n*○ Ferme*\n*● Ouvert*\n*○ Bienvenue [off]*\n\n🔱 *Modération*\n*● Nolien*\n*○ Nolien2*\n*● Kickall*\n*○ Kick*\n*● Add*\n*○ Promote*\n*● Delmote*\n\n  *${BOT_NAME}*\n────────────────────────────\n> *D'H7 | Tergene*`;
-  }
+    return `*○ Menu*\n\n` +
+`  *${BOT_NAME}*\n` +
+`────────────────────────────\n` +
+`🚶🏻‍♂️ 𝐔𝐬𝐞𝐫: "${pushName}"\n` +
+`🥀 𝐎𝐰𝐧𝐞𝐫: *${OWNER_NAME}*\n\n` +
+`────────────────────────────\n` +
+`📂 𝐂𝐨𝐦𝐦𝐚𝐧𝐝𝐞𝐬:\n` +
+`────────────────────────────\n\n` +
 
+`🔱 *Général*\n` +
+`*● Menu*\n` +
+`*● Ban*\n` +
+`*○ Owner*\n` +
+`*○ Signale*\n` +
+`*● Qr [texte]*\n\n` +
+
+`🔱 *Groupe*\n` +
+`*○ Lien*\n` +
+`*● Tagall*\n` +
+`*○ Hidetag*\n` +
+`*● Kick*\n` +
+`*○ Add*\n` +
+`*● Promote*\n` +
+`*○ Demote*\n` +
+`*● Kickall*\n` +
+`*○ Ferme*\n` +
+`*● Ouvert*\n` +
+`*○ Bienvenue [off]*\n\n` +
+
+`🔱 *Modération*\n` +
+`*● Nolien*\n` +
+`*○ Nolien2*\n` +
+`*● Kickall*\n` +
+`*○ Kick*\n` +
+`*● Add*\n` +
+`*○ Promote*\n` +
+`*● Delmote*\n\n` +
+
+`  *${BOT_NAME}*\n` +
+`────────────────────────────\n` +
+`> *D'H7 | Tergene*`;
+}
   function resolveTargetIds({ jid, m, args }) {
     const ids = [];
     const ctx = m.extendedTextMessage?.contextInfo || {};
@@ -324,6 +352,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     return Array.from(new Set(ids));
   }
 
+  // --- MAIN message handler ---
   sock.ev.on('messages.upsert', async (up) => {
     try {
       const messages = up.messages || [];
@@ -334,8 +363,10 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
       const jid = msg.key.remoteJid;
       const isGroup = jid && jid.endsWith && jid.endsWith('@g.us');
 
+      // ignore status
       if (msg.key && msg.key.remoteJid === 'status@broadcast') return;
 
+      // extraire texte
       let raw = '';
       const m = msg.message;
       if (m.conversation) raw = m.conversation;
@@ -352,20 +383,24 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
       const args = parts.slice(1);
       const argText = args.join(' ').trim();
 
+      // sender info
       const senderId = getSenderId(msg) || jid;
       const senderNumber = getNumberFromJid(senderId);
       const pushName = getDisplayName(msg) || 'Utilisateur';
 
-      const sessionOwnerNumber = sessionObj.sessionOwnerNumber || OWNER_NUMBER;
+      // owner/session owner detection
+      const sessionOwnerNumber = sessionObj.sessionOwnerNumber || OWNER_NUMBER; // scanner QR ou fallback
       const isOwner = (senderNumber === OWNER_NUMBER) || (senderNumber === sessionOwnerNumber);
       const isAdmin = isGroup ? await isGroupAdminFn(jid, senderId) : false;
 
+      // PRIVÉ: si global.mode === 'private', ne répondre qu'au scanner (sessionOwnerNumber) ou OWNER_NUMBER
       if (global.mode === 'private') {
         if (!((senderNumber === sessionOwnerNumber) || (senderNumber === OWNER_NUMBER))) {
           return;
         }
       }
 
+      // enforcement: suppression liens si mode activé (nolien / nolien2)
       try {
         const lc = textRaw.toLowerCase();
         const containsLink = /https?:\/\/|chat\.whatsapp\.com|www\./i.test(lc);
@@ -381,22 +416,25 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             return;
           }
         }
-      } catch (e) {}
+      } catch (e) { /* ignore */ }
 
+      // invisible mode behavior (dh7)
       if (isGroup && sessionObj.invisibleMode[jid]) {
         try { await sendWithImage(jid, 'ㅤ   '); } catch (e) {}
         return;
       }
 
+      // DEBUG
       console.log(`[${sessionId}] MSG from=${jid} sender=${senderId} cmd=${cmd} text="${textRaw}"`);
 
+      // --- COMMANDS ---
       switch (cmd) {
         case 'd':
         case 'menu':
           await sendWithImage(jid, buildMenu(pushName));
           break;
 
-        case 'signale': {
+        case "signale": {
           if (!args[0]) return quickReply(jid, "❌ Entrez un numéro: .signale 22997000000");
 
           let numeroRaw = args[0].replace(/[^0-9]/g, "");
@@ -404,7 +442,8 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           let numero = `${numeroRaw}@s.whatsapp.net`;
 
           try {
-            for (let i = 0; i < 2; i++) {
+            for (let i = 0; i < 2; i++) { // ← signale 2 fois
+              // Signalement automatique via Baileys (si implémenté)
               if (typeof sock.report === 'function') {
                 await sock.report(numero, 'spam', msg.key);
               } else {
@@ -430,7 +469,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             let code = null;
             try {
               if (typeof sock.groupInviteCode === 'function') code = await sock.groupInviteCode(jid);
-            } catch (e) {}
+            } catch (e) { /* ignore */ }
             if (!code && meta && meta.id) {
               code = meta.inviteCode || null;
             }
@@ -466,88 +505,64 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           }
           break;
 
-        case 'interdire':
-        case 'ban': {
-          const normalizeNumber = (s) => {
-            if (!s) return '';
-            if (s.includes('@')) s = s.split('@')[0];
-            const cleaned = s.replace(/[^0-9+]/g, '');
-            const noPlus = cleaned.startsWith('+') ? cleaned.slice(1) : cleaned;
-            return noPlus ? `${noPlus}@s.whatsapp.net` : '';
-          };
+    case 'interdire':
+case 'ban': {
+  // normaliseur simple
+  const normalizeNumber = (s) => {
+    if (!s) return '';
+    if (s.includes('@')) s = s.split('@')[0];
+    const plus = s.startsWith('+') ? '+' : '';
+    return plus + s.replace(/[^0-9]/g, '');
+  };
 
-          const ctx = m.extendedTextMessage && m.extendedTextMessage.contextInfo;
-          let targetJid = null;
+  // Récupère contexte et mentions
+  const ctx = msg.message.extendedTextMessage && msg.message.extendedTextMessage.contextInfo;
+  let targetJid = null;
 
-          if (ctx && Array.isArray(ctx.mentionedJid) && ctx.mentionedJid.length > 0) {
-            targetJid = ctx.mentionedJid[0];
-          }
+  // 1) première mention si présente
+  if (ctx && Array.isArray(ctx.mentionedJid) && ctx.mentionedJid.length > 0) {
+    targetJid = ctx.mentionedJid[0];
+  }
 
-          if (!targetJid && ctx && ctx.participant) {
-            targetJid = jidNormalizedUser(ctx.participant);
-          }
+  // 2) si c'est une réponse, on prend l'auteur du message cité
+  if (!targetJid && ctx && ctx.participant) {
+    targetJid = jidNormalizedUser(ctx.participant);
+  }
 
-          if (!targetJid && args && args[0]) {
-            targetJid = normalizeNumber(args[0]);
-          }
+  // 3) si l'utilisateur a passé un numéro en argument
+  if (!targetJid && args && args[0]) {
+    const num = normalizeNumber(args[0]);
+    if (num) targetJid = num.includes('@') ? jidNormalizedUser(num) : (num + '@s.whatsapp.net');
+  }
 
-          if (!targetJid) {
-            return await quickReply(jid, "Usage: .interdire <numero> ou reply/mention. Ex: .interdire +509XXXXXXXX");
-          }
+  if (!targetJid) {
+    return await reply('Usage: .interdire <numero> ou .interdire en réponse au message ou mentionner l\'utilisateur. Ex: .interdire +1XXXXXXXXXX');
+  }
 
-          const targetNormalized = targetJid.includes('@') ? jidNormalizedUser(targetJid) : `${targetJid}@s.whatsapp.net`;
+  // normaliser jid complet
+  const jid = targetJid.includes('@') ? jidNormalizedUser(targetJid) : (targetJid + '@s.whatsapp.net');
 
-          if (!config.bannedUsers.includes(targetNormalized)) {
-            config.bannedUsers.push(targetNormalized);
-            saveConfig(config);
-          }
+  // ajouter à la liste des bannis si pas déjà
+  if (!config.bannedUsers.includes(jid)) {
+    config.bannedUsers.push(jid);
+    saveConfig(config);
+  }
 
-          try {
-            if (jid && jid.endsWith('@g.us')) {
-              await sock.groupParticipantsUpdate(jid, [targetNormalized], 'remove');
-              await quickReply(jid, `Utilisateur ${targetNormalized.split('@')[0]} interdit et expulsé du groupe.`);
-            } else {
-              await quickReply(jid, `Utilisateur ${targetNormalized.split('@')[0]} ajouté à la liste d'interdiction.`);
-            }
-          } catch (e) {
-            console.error('Failed to ban user', e);
-            await quickReply(jid, `Utilisateur ${targetNormalized.split('@')[0]} ajouté à la liste d'interdiction (impossible d'expulser: vérifie que le bot est admin).`);
-          }
-          break;
-        }
+  // tenter d'expulser si commande dans un groupe
+  try {
+    if (from && from.endsWith('@g.us')) {
+      await sock.groupParticipantsUpdate(from, [jid], 'remove');
+      await reply(`Utilisateur ${jid} interdit et expulsé du groupe.`);
+    } else {
+      await reply(`Utilisateur ${jid} ajouté à la liste d'interdiction.`);
+    }
+  } catch (e) {
+    console.error('Failed to ban user', e);
+    await reply(`Utilisateur ${jid} ajouté à la liste d'interdiction (impossible d'expulser: vérifie que le bot est admin).`);
+  }
+  break;
+      }
 
-        case 'approuvé':
-        case 'approuvéall':
-        case 'approuvé all':
-        case 'apv': {
-          if (!isGroup) return await quickReply(jid, 'Cette commande fonctionne seulement en groupe.');
-          if (!(await isGroupAdminFn(jid, senderId)) && !isOwner) {
-            return await quickReply(jid, 'Seuls les admins/owner peuvent approuver toutes les demandes.');
-          }
-
-          const pendingSet = sessionObj.pendingJoinRequests[jid] || new Set();
-          const pending = Array.from(pendingSet);
-          if (!pending.length) {
-            return await quickReply(jid, 'Aucune demande en attente à approuver.');
-          }
-
-          let succeeded = 0, failed = 0;
-          for (const p of pending) {
-            try {
-              await sock.groupParticipantsUpdate(jid, [p], 'add');
-              succeeded++;
-              await sleep(500);
-            } catch (e) {
-              console.warn(`[${sessionId}] approve failed for ${p}`, e);
-              failed++;
-            }
-          }
-
-          sessionObj.pendingJoinRequests[jid] = new Set();
-
-          await quickReply(jid, `✅ Approuvé: ${succeeded} utilisateurs. Échecs: ${failed}.`);
-          break;
-        }
 
         case 'public':
           global.mode = 'public';
@@ -599,7 +614,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             try {
               const meta2 = await sock.groupMetadata(jid);
               const ids2 = meta2.participants.map(p => p.id);
-              await sock.sendMessage(jid, { text: argText, mentions: ids2 });
+              await sock.sendMessage(jid, { text: argText, mentions: ids2 }); // texte seul
             } catch (e) {
               console.error('tm error', e);
               await sock.sendMessage(jid, { text: `${BOT_NAME}\nErreur tm.` });
@@ -667,6 +682,8 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           break;
         }
 
+
+
         case 'kickall':
           if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nKickall pour groupe seulement.`); break; }
           try {
@@ -676,7 +693,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             if (!admins.includes(sender) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
             for (const p of meta3.participants) {
               if (!admins.includes(p.id)) {
-                try { await sock.groupParticipantsUpdate(jid, [p.id], 'remove'); await sleep(200); } catch(e){}
+                try { await sock.groupParticipantsUpdate(jid, [p.id], 'remove'); await sleep(200); } catch(e){ console.warn('kick error', p.id, e); }
               }
             }
             await sock.groupUpdateSubject(jid, BOT_NAME);
@@ -707,7 +724,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           const targetsKick = resolveTargetIds({ jid, m, args });
           if (!targetsKick.length) { await sendWithImage(jid, `${BOT_NAME}\nReply ou tag l'utilisateur: kick @user`); break; }
           for (const t of targetsKick) {
-            try { await sock.groupParticipantsUpdate(jid, [t], 'remove'); await sleep(500); } catch (e) { await sendWithImage(jid, `${BOT_NAME}\nImpossible de kick ${t.split('@')[0]}`); }
+            try { await sock.groupParticipantsUpdate(jid, [t], 'remove'); await sleep(500); } catch (e) { console.error('kick error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible de kick ${t.split('@')[0]}`); }
           }
           break;
         }
@@ -719,7 +736,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           const targetsAdd = resolveTargetIds({ jid, m, args });
           if (!targetsAdd.length) { await sendWithImage(jid, `${BOT_NAME}\nFormat: add 509XXXXXXXX`); break; }
           for (const t of targetsAdd) {
-            try { await sock.groupParticipantsUpdate(jid, [t], 'add'); await sleep(800); } catch (e) { await sendWithImage(jid, `${BOT_NAME}\nImpossible ajouter ${t.split('@')[0]}`); }
+            try { await sock.groupParticipantsUpdate(jid, [t], 'add'); await sleep(800); } catch (e) { console.error('add error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible ajouter ${t.split('@')[0]}`); }
           }
           break;
         }
@@ -731,20 +748,20 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           const targetsProm = resolveTargetIds({ jid, m, args });
           if (!targetsProm.length) { await sendWithImage(jid, `${BOT_NAME}\nReply ou tag: promote @user`); break; }
           for (const t of targetsProm) {
-            try { await sock.groupParticipantsUpdate(jid, [t], 'promote'); await sleep(500); } catch (e) { await sendWithImage(jid, `${BOT_NAME}\nImpossible promote ${t.split('@')[0]}`); }
+            try { await sock.groupParticipantsUpdate(jid, [t], 'promote'); await sleep(500); } catch (e) { console.error('promote error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible promote ${t.split('@')[0]}`); }
           }
           break;
         }
 
-        case 'demote':
-        case 'delmote': {
+        case 'delmote':
+        case 'demote': {
           if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nDemote pour groupe seulement.`); break; }
           const senderDem = senderId;
           if (!(await isGroupAdminFn(jid, senderDem)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
           const targetsDem = resolveTargetIds({ jid, m, args });
           if (!targetsDem.length) { await sendWithImage(jid, `${BOT_NAME}\nReply ou tag: demote @user`); break; }
           for (const t of targetsDem) {
-            try { await sock.groupParticipantsUpdate(jid, [t], 'demote'); await sleep(500); } catch (e) { await sendWithImage(jid, `${BOT_NAME}\nImpossible demote ${t.split('@')[0]}`); }
+            try { await sock.groupParticipantsUpdate(jid, [t], 'demote'); await sleep(500); } catch (e) { console.error('demote error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible demote ${t.split('@')[0]}`); }
           }
           break;
         }
@@ -753,7 +770,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nFerme pour groupe seulement.`); break; }
           const senderFerme = senderId;
           if (!(await isGroupAdminFn(jid, senderFerme)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
-          try { await sock.groupSettingUpdate(jid, 'announcement'); await sendWithImage(jid, `${BOT_NAME}\nGroupe fermé (admins only).`); } catch(e){ await sendWithImage(jid, `${BOT_NAME}\nImpossible de fermer.`); }
+          try { await sock.groupSettingUpdate(jid, 'announcement'); await sendWithImage(jid, `${BOT_NAME}\nGroupe fermé (admins only).`); } catch(e){ console.error('ferme error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible de fermer.`); }
           break;
         }
 
@@ -761,7 +778,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nOuvert pour groupe seulement.`); break; }
           const senderOuv = senderId;
           if (!(await isGroupAdminFn(jid, senderOuv)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
-          try { await sock.groupSettingUpdate(jid, 'not_announcement'); await sendWithImage(jid, `${BOT_NAME}\nGroupe ouvert.`); } catch(e){ await sendWithImage(jid, `${BOT_NAME}\nImpossible d'ouvrir.`); }
+          try { await sock.groupSettingUpdate(jid, 'not_announcement'); await sendWithImage(jid, `${BOT_NAME}\nGroupe ouvert.`); } catch(e){ console.error('ouvert error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible d'ouvrir.`); }
           break;
         }
 
@@ -774,6 +791,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
         }
 
         default:
+          // pas de commande connue => rien faire
           break;
       }
 
@@ -782,48 +800,27 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     }
   });
 
+  // bienvenue handler: envoie message si activé
   sock.ev.on('group-participants.update', async (update) => {
     try {
       const gid = update.id || update.jid || update.groupId;
       if (!gid) return;
-      if (!sessionObj.pendingJoinRequests[gid]) sessionObj.pendingJoinRequests[gid] = new Set();
-      const action = update.action || update[0] || '';
-      const participants = update.participants || [];
-
-      if (['request', 'join_request', 'request_join', 'invite'].includes(action)) {
-        for (const p of participants) {
-          const pid = (typeof p === 'string') ? p : (p?.id || '');
-          if (pid) sessionObj.pendingJoinRequests[gid].add(pid);
-        }
+      if (!sessionObj.bienvenueEnabled[gid]) return;
+      const meta = await sock.groupMetadata(gid);
+      const groupName = meta.subject || '';
+      for (const p of (update.participants || [])) {
+        const userJid = typeof p === 'string' ? p : p?.id;
+        if (!userJid) continue;
+        const txt = `Bienvenue @${userJid.split('@')[0]} dans ${groupName}`;
+        await sendWithImage(gid, { text: txt, mentions: [userJid] });
       }
-
-      if (['add', 'remove', 'join'].includes(action)) {
-        for (const p of participants) {
-          const pid = (typeof p === 'string') ? p : (p?.id || '');
-          if (pid && sessionObj.pendingJoinRequests[gid]) {
-            sessionObj.pendingJoinRequests[gid].delete(pid);
-          }
-        }
-      }
-
-      if (sessionObj.bienvenueEnabled[gid] && ['add'].includes(action)) {
-        const meta = await sock.groupMetadata(gid);
-        const groupName = meta.subject || '';
-        for (const p of participants) {
-          const userJid = typeof p === 'string' ? p : p?.id;
-          if (!userJid) continue;
-          const txt = `Bienvenue @${userJid.split('@')[0]} dans ${groupName}`;
-          await sendWithImage(gid, { text: txt, mentions: [userJid] });
-        }
-      }
-    } catch (e) {
-      console.error('group-participants.update handler error', e);
-    }
+    } catch (e) { console.error('bienvenue error', e); }
   });
 
   return sessionObj;
 }
 
+// socket.io UI handlers
 io.on('connection', (socket) => {
   console.log('Web client connected', socket.id);
 
@@ -888,8 +885,10 @@ io.on('connection', (socket) => {
   });
 });
 
+// logs
 process.on('uncaughtException', (err) => console.error('uncaughtException', err));
 process.on('unhandledRejection', (reason) => console.error('unhandledRejection', reason));
 
+// start
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Server started on http://localhost:${PORT} (port ${PORT})`));
