@@ -60,14 +60,9 @@ const IMAGE_URLS = [
   "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896255/tf-stream-url/IMG-20250824-WA0969_mj3ydr.jpg",
   "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896275/tf-stream-url/2bffc2ba4c4d2271a2a2fd934751a0b7_0_zc2mva.jpg",
   "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896291/tf-stream-url/acc7e4fb0dd9fb501ffbd7b396806a72_0_d9leau.jpg",
-  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896307/tf-stream-url/ebc949599c8e2df72b4731d261d55085_0_tupshj.jpg",
   "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896321/tf-stream-url/13362d64459b2b250982b79433f899d8_0_dk8ach.jpg",
   "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896336/tf-stream-url/IMG-20250624-WA0067_g0czqu.jpg",
-  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896350/tf-stream-url/IMG-20250728-WA0138_cu0wgb.jpg",
-  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896367/tf-stream-url/IMG-20250815-WA0003_p9cg1i.jpg",
-  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896391/tf-stream-url/IMG-20250815-WA0005_mbeoha.jpg",
-  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896407/tf-stream-url/IMG-20250429-WA0112_zx066u.jpg",
-  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896429/tf-stream-url/IMG-20250825-WA0270_wtex4z.jpg"
+  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896367/tf-stream-url/IMG-20250815-WA0003_p9cg1i.jpg"
 ];
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
