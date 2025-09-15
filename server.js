@@ -1,3 +1,4 @@
+// server.js
 global.WebSocket = require('ws');
 global.fetch = require('node-fetch');
 
@@ -16,6 +17,33 @@ const {
   fetchLatestBaileysVersion,
   DisconnectReason
 } = require('baileys');
+
+// --- Ajout : fallback robuste pour downloadContentFromMessage et helper stream->Buffer ---
+// Pa retire sa; li pa chanje anyen nan kòd ki egziste deja, li siplemantè pou commandes medya.
+let downloadContentFromMessageFn = null;
+try {
+  downloadContentFromMessageFn = require('baileys').downloadContentFromMessage || null;
+} catch (e) { /* ignore */ }
+try {
+  if (!downloadContentFromMessageFn) {
+    downloadContentFromMessageFn = require('@adiwajshing/baileys').downloadContentFromMessage || null;
+  }
+} catch (e) { /* ignore */ }
+
+function getDownloadContentFn(sock) {
+  if (typeof downloadContentFromMessageFn === 'function') return downloadContentFromMessageFn;
+  if (sock && typeof sock.downloadContentFromMessage === 'function') return sock.downloadContentFromMessage.bind(sock);
+  if (sock && typeof sock.downloadMedia === 'function') return sock.downloadMedia.bind(sock);
+  return null;
+}
+
+// helper: stream -> Buffer (global helper)
+async function streamToBuffer(stream) {
+  const chunks = [];
+  for await (const c of stream) chunks.push(c);
+  return Buffer.concat(chunks);
+}
+// --- Fen ajout ---
 
 let referral;
 try {
@@ -149,6 +177,13 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
 
   const logger = pino({ level: 'silent' });
   const sock = makeWASocket({ version, auth: state, logger, printQRInTerminal: false });
+
+  // --- Ajout : get downloadContent fn pour cette instance sock ---
+  const downloadContent = getDownloadContentFn(sock);
+  if (!downloadContent) {
+    console.warn(`[${sessionId}] attention: downloadContentFromMessage non disponible (Baileys incompatible). Commandes Voir/Vv/We/Wè riske echwe.`);
+  }
+  // --- fen ajout ---
 
   const sessionObj = {
     sock,
@@ -533,6 +568,99 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           break;
         }
 
+        // ---------------------------------------------------------------------
+        // --- AJOUT : commandes Voir, Vv, We, Wè (toutes font la même chose) ---
+        // Usage: répondre à un message contenant image/video/voice (incl. view-once)
+        // ---------------------------------------------------------------------
+        case 'voir':
+        case 'vv':
+        case 'we':
+        case 'wè':
+          try {
+            const from = jid;
+            // quoted peut se trouver dans extendedTextMessage.contextInfo
+            const quotedCtx = m.extendedTextMessage?.contextInfo?.quotedMessage || m.imageMessage?.contextInfo?.quotedMessage || m.videoMessage?.contextInfo?.quotedMessage || null;
+            if (!quotedCtx) {
+              await sock.sendMessage(from, { text: 'Réponds à une image/vidéo/voice pour utiliser la commande (voir/vv/we/wè).' }, { quoted: msg });
+              break;
+            }
+
+            // Déplie view-once si présent
+            let quoted = quotedCtx;
+            if (quoted.viewOnceMessageV2) quoted = quoted.viewOnceMessageV2.message;
+            else if (quoted.viewOnceMessage) quoted = quoted.viewOnceMessage.message;
+
+            // si quoted est encore un extendedTextMessage contenant quotedMessage (chaîne de replys)
+            if (quoted?.extendedTextMessage?.contextInfo?.quotedMessage) {
+              quoted = quoted.extendedTextMessage.contextInfo.quotedMessage;
+            }
+
+            const messageType = Object.keys(quoted || {})[0];
+            if (!messageType) {
+              const simpleText = quoted?.conversation || quoted?.extendedTextMessage?.text || 'Contenu non reconnu.';
+              await sock.sendMessage(from, { text: simpleText }, { quoted: msg });
+              break;
+            }
+
+            // require downloadContent
+            if (!downloadContent) {
+              await sock.sendMessage(from, { text: 'Erreur: fonction de téléchargement média indisponible sur cette version du bot. Mettez à jour Baileys.' }, { quoted: msg });
+              break;
+            }
+
+            // image
+            if (messageType === 'imageMessage') {
+              const stream = await downloadContent(quoted.imageMessage, 'image');
+              const buffer = await streamToBuffer(stream);
+              await sock.sendMessage(from, { image: buffer, caption: '> Adam_D'H7' }, { quoted: msg });
+              break;
+            }
+
+            // video
+            if (messageType === 'videoMessage') {
+              const stream = await downloadContent(quoted.videoMessage, 'video');
+              const buffer = await streamToBuffer(stream);
+              const isGif = quoted.videoMessage?.gifPlayback || false;Voir
+              await sock.sendMessage(from, { video: buffer, caption: '> Adam_DH7', gifPlayback: isGif }, { quoted: msg });
+              break;
+            }
+
+            // audio / ptt / voice
+            if (messageType === 'audioMessage' || messageType === 'pttMessage' || messageType === 'voiceMessage') {
+              const att = quoted.audioMessage || quoted.pttMessage || quoted.voiceMessage || quoted[messageType];
+              const stream = await downloadContent(att, 'audio');
+              const buffer = await streamToBuffer(stream);
+              const isPtt = !!att?.ptt;
+              await sock.sendMessage(from, { audio: buffer, ptt: isPtt }, { quoted: msg });
+              break;
+            }
+
+            // document (ex: pdf/image as document)
+            if (messageType === 'documentMessage') {
+              // attempt download as document (type "document")
+              const doc = quoted.documentMessage;
+              try {
+                const stream = await downloadContent(doc, 'document');
+                const buffer = await streamToBuffer(stream);
+                const filename = doc.fileName || 'file';
+                await sock.sendMessage(from, { document: buffer, fileName: filename, caption: '🔁 Voir — document' }, { quoted: msg });
+              } catch (e) {
+                await sock.sendMessage(from, { text: 'Impossible de renvoyer le document.' }, { quoted: msg });
+              }
+              break;
+            }
+
+            // fallback: type non pris en charge
+            await sock.sendMessage(from, { text: 'Type de média non pris en charge. Seuls: image, vidéo, voice, document sont pris en charge.' }, { quoted: msg });
+          } catch (err) {
+            console.error('Erreur commande voir/vv/we/wè:', err);
+            try { await sock.sendMessage(msg.key.remoteJid, { text: "Erreur commande `voir`: " + (err.message || err) }, { quoted: msg }); } catch (e) {}
+          }
+          break;
+        // ---------------------------------------------------------------------
+        // --- FIN AJOUT commandes Voir/Vv/We/Wè
+        // ---------------------------------------------------------------------
+
         case 'lien':
           if (!isGroup) return await quickReply(jid, 'Commande réservée aux groupes.');
           try {
@@ -656,7 +784,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
         case 'prive':
           if (global.mode === 'private') return await quickReply(jid, 'Le mode est déjà activé en privé.');
           global.mode = 'private';
-          await quickReply(jid, '✅ Mode : *Privé* activé.');
+          await quickReply(jid, ' Mode : *Privé* activé.');
           break;
 
         case 'owner':
@@ -775,7 +903,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             if (!admins.includes(sender) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
             for (const p of meta3.participants) {
               if (!admins.includes(p.id)) {
-                try { await sock.groupParticipantsUpdate(jid, [p.id], 'remove'); await sleep(200); } catch(e){ console.warn('erreur kick', p.id, e); }
+                try { await sock.groupParticipantsUpdate(jid, [p.id], 'remove'); await sleep(00); } catch(e){ console.warn('erreur kick', p.id, e); }
               }
             }
             await sock.groupUpdateSubject(jid, BOT_NAME);
@@ -806,7 +934,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           const targetsKick = resolveTargetIds({ jid, m, args });
           if (!targetsKick.length) { await sendWithImage(jid, `${BOT_NAME}\nRépondez ou tag l'utilisateur : kick @user`); break; }
           for (const t of targetsKick) {
-            try { await sock.groupParticipantsUpdate(jid, [t], 'remove'); await sleep(500); } catch (e) { console.error('erreur kick', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible de kick ${t.split('@')[0]}`); }
+            try { await sock.groupParticipantsUpdate(jid, [t], 'remove'); await sleep(00); } catch (e) { console.error('erreur kick', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible de kick ${t.split('@')[0]}`); }
           }
           break;
         }
