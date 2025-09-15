@@ -52,7 +52,7 @@ if (!fs.existsSync(SESSIONS_BASE)) fs.mkdirSync(SESSIONS_BASE, { recursive: true
 
 // Nom et numéro du propriétaire / bot
 const OWNER_NAME = "Adam_D'H7";
-const OWNER_NUMBER = '50935492574;
+const OWNER_NUMBER = '50935492574';
 const BOT_NAME = "Adam_D'H7";
 
 // --- REMPLACÉ : nouvelles URLs (anciens liens effacés) ---
