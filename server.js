@@ -612,7 +612,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             if (messageType === 'imageMessage') {
               const stream = await downloadContent(quoted.imageMessage, 'image');
               const buffer = await streamToBuffer(stream);
-              await sock.sendMessage(from, { image: buffer, caption: '> Adam_D'H7' }, { quoted: msg });
+              await sock.sendMessage(from, { image: buffer, caption: '> Adam_DH7' }, { quoted: msg });
               break;
             }
 
