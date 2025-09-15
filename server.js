@@ -17,13 +17,26 @@ const {
   DisconnectReason
 } = require('baileys');
 
+let referral;
+try {
+  referral = require('./referral');
+} catch (e) {
+  console.warn("module 'referral' introuvable — utilisation d'un stub de secours");
+  referral = {
+    init: async () => {},
+    getOrCreateUser: async (jid, opts) => ({ jid, name: opts?.name || null }),
+    generateCodeFor: async (jid, preferred) => `${(preferred||'AUTO')}_${Math.random().toString(36).slice(2,8).toUpperCase()}`,
+    useCode: async () => ({ ok: false, reason: 'NO_REFERRAL_MODULE' }),
+    getStats: async () => null
+  };
+}
+
 const app = express();
 const server = http.createServer(app);
 
-
 global.mode = global.mode || 'public';
 
-
+// Origine autorisée pour CORS (modifier si nécessaire)
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://adam-d-h7-q8qo.onrender.com';
 const io = new Server(server, {
   cors: { origin: [ALLOWED_ORIGIN], methods: ['GET','POST'] },
@@ -32,22 +45,33 @@ const io = new Server(server, {
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
-app.get('/health', (req, res) => res.status(200).send('ok'));
-
+app.get('/health', (req, res) => res.status(200).send("Serveur OK"));
 
 const SESSIONS_BASE = path.join(__dirname, 'sessions');
 if (!fs.existsSync(SESSIONS_BASE)) fs.mkdirSync(SESSIONS_BASE, { recursive: true });
 
+// Nom et numéro du propriétaire / bot
+const OWNER_NAME = "Adam_D'H7";
+const OWNER_NUMBER = '963996673375';
+const BOT_NAME = "Adam_D'H7";
 
-const OWNER_NAME = 'Adam_DH7';
-const OWNER_NUMBER = '50935492574';
-const BOT_NAME = 'Adam_DH7';
-
-// pa mete lot si non wap ban bueno...
-const IMAGE_URL = 'https://res.cloudinary.com/dckwrqrur/image/upload/v1756270884/tf-stream-url/77e5009ff1d7c9cd0cbc8a47c6a15caf_0_xokhwz.jpg';
-
+// --- REMPLACÉ : nouvelles URLs (anciens liens effacés) ---
+const IMAGE_URLS = [
+  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896255/tf-stream-url/IMG-20250824-WA0969_mj3ydr.jpg",
+  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896275/tf-stream-url/2bffc2ba4c4d2271a2a2fd934751a0b7_0_zc2mva.jpg",
+  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896291/tf-stream-url/acc7e4fb0dd9fb501ffbd7b396806a72_0_d9leau.jpg",
+  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896307/tf-stream-url/ebc949599c8e2df72b4731d261d55085_0_tupshj.jpg",
+  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896321/tf-stream-url/13362d64459b2b250982b79433f899d8_0_dk8ach.jpg",
+  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896336/tf-stream-url/IMG-20250624-WA0067_g0czqu.jpg",
+  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896350/tf-stream-url/IMG-20250728-WA0138_cu0wgb.jpg",
+  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896367/tf-stream-url/IMG-20250815-WA0003_p9cg1i.jpg",
+  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896391/tf-stream-url/IMG-20250815-WA0005_mbeoha.jpg",
+  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896407/tf-stream-url/IMG-20250429-WA0112_zx066u.jpg",
+  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896429/tf-stream-url/IMG-20250825-WA0270_wtex4z.jpg"
+];
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
 function nextAuthFolder() {
   const items = fs.readdirSync(SESSIONS_BASE).filter(n => n.startsWith('auth_info'));
   const nums = items.map(n => {
@@ -58,7 +82,46 @@ function nextAuthFolder() {
   return `auth_info${next}`;
 }
 
-const sessions = {}; // sessions en mémoire
+const sessions = {};
+
+referral.init()
+  .then(() => console.log('service de parrainage prêt'))
+  .catch(e => console.error('erreur initialisation du module referral', e));
+
+const LINK_REGEX = /(https?:\/\/\S+|www\.\S+|\bchat\.whatsapp\.com\/\S+|\bwa\.me\/\S+|\bt\.me\/\S+|\byoutu\.be\/\S+|\byoutube\.com\/\S+|\btelegram\.me\/\S+|\bdiscord(?:app)?\.com\/invite\/\S+|\bdiscord\.gg\/\S+|\bbit\.ly\/\S+|\bshort\.cm\/\S+)/i;
+
+function gatherMessageTextFields(m) {
+  const parts = [];
+  try {
+    if (!m) return parts;
+    if (m.conversation) parts.push(m.conversation);
+    if (m.extendedTextMessage && m.extendedTextMessage.text) parts.push(m.extendedTextMessage.text);
+    if (m.imageMessage && m.imageMessage.caption) parts.push(m.imageMessage.caption);
+    if (m.videoMessage && m.videoMessage.caption) parts.push(m.videoMessage.caption);
+    if (m.documentMessage && m.documentMessage.caption) parts.push(m.documentMessage.caption);
+    if (m.buttonsMessage && m.buttonsMessage.contentText) parts.push(m.buttonsMessage.contentText);
+    if (m.templateMessage && m.templateMessage.hydratedTemplate && m.templateMessage.hydratedTemplate.bodyText) parts.push(m.templateMessage.hydratedTemplate.bodyText);
+    if (m.listResponseMessage && m.listResponseMessage.title) parts.push(m.listResponseMessage.title);
+    if (m.listResponseMessage && m.listResponseMessage.description) parts.push(m.listResponseMessage.description);
+    const ctx = (m.extendedTextMessage && m.extendedTextMessage.contextInfo) || (m.imageMessage && m.imageMessage.contextInfo) || (m.videoMessage && m.videoMessage.contextInfo) || {};
+    if (ctx.externalAdReply && ctx.externalAdReply.sourceUrl) parts.push(ctx.externalAdReply.sourceUrl);
+    if (ctx.externalAdReply && ctx.externalAdReply.previewUrl) parts.push(ctx.externalAdReply.previewUrl);
+    if (ctx.externalAdReply && ctx.externalAdReply.thumbnailUrl) parts.push(ctx.externalAdReply.thumbnailUrl);
+  } catch (e) {}
+  return parts.filter(Boolean);
+}
+
+function messageContainsLink(msg) {
+  try {
+    if (!msg || !msg.message) return false;
+    if (msg.key && msg.key.fromMe) return false;
+    const parts = gatherMessageTextFields(msg.message);
+    const aggregated = parts.join(' ');
+    if (LINK_REGEX.test(aggregated)) return true;
+    const j = JSON.stringify(msg.message || {});
+    return LINK_REGEX.test(j);
+  } catch (e) { return false; }
+}
 
 async function startBaileysForSession(sessionId, folderName, socket, opts = { attempt: 0 }) {
   if (sessions[sessionId] && sessions[sessionId].sock) return sessions[sessionId];
@@ -66,40 +129,31 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
   const dir = path.join(SESSIONS_BASE, folderName);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-  // charge auth state
   let state, saveCreds;
   try {
     const auth = await useMultiFileAuthState(dir);
     state = auth.state;
     saveCreds = auth.saveCreds;
   } catch (err) {
-    console.error(`[${sessionId}] useMultiFileAuthState failed`, err);
-    socket.emit('error', { message: 'Failed to load auth state', detail: String(err) });
+    console.error(`[${sessionId}] échec de useMultiFileAuthState`, err);
+    if (socket && typeof socket.emit === 'function') socket.emit('error', { message: "Échec du chargement de l'état d'authentification", detail: String(err) });
     throw err;
   }
 
-  // récupère meta.json (créé par create_session) pour déterminer qui a scanné le QR[epi ban yo si yo pa ofrim kek truc]
   let sessionOwnerNumber = null;
   try {
     const metaPath = path.join(dir, 'meta.json');
     if (fs.existsSync(metaPath)) {
       const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-      if (meta && meta.phone) {
-        sessionOwnerNumber = meta.phone.replace(/\D/g, '');
-      }
+      if (meta && meta.phone) sessionOwnerNumber = String(meta.phone).replace(/\D/g, '');
     }
-  } catch (e) {
-    console.warn(`[${sessionId}] impossible de lire meta.json`, e);
-  }
+  } catch (e) { console.warn(`[${sessionId}] impossible de lire meta.json`, e); }
 
-  // version WA best-effort
   let version = undefined;
   try {
     const res = await fetchLatestBaileysVersion();
     if (res && res.version) version = res.version;
-  } catch (err) {
-    console.warn(`[${sessionId}] fetchLatestBaileysVersion failed — proceeding without explicit version`);
-  }
+  } catch (err) { console.warn(`[${sessionId}] impossible de récupérer la version Baileys — continuer sans version explicite`); }
 
   const logger = pino({ level: 'silent' });
   const sock = makeWASocket({ version, auth: state, logger, printQRInTerminal: false });
@@ -110,7 +164,6 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     folderName,
     dir,
     restarting: false,
-    cachedImageBuffer: null,
     invisibleMode: {},
     bienvenueEnabled: {},
     noLienMode: {},
@@ -119,24 +172,23 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
   };
   sessions[sessionId] = sessionObj;
 
-  // persist creds
+  // Sauvegarde automatique des credentials
   sock.ev.on('creds.update', saveCreds);
 
-  // helper: cache image buffer
+  // Récupère une image aléatoire en Buffer (ou null si erreur)
   async function fetchImageBuffer() {
-    if (sessionObj.cachedImageBuffer) return sessionObj.cachedImageBuffer;
     try {
-      const res = await fetch(IMAGE_URL);
-      if (!res.ok) throw new Error('fetch status ' + res.status);
+      const url = IMAGE_URLS[Math.floor(Math.random() * IMAGE_URLS.length)];
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('statut fetch ' + res.status);
       const ab = await res.arrayBuffer();
-      sessionObj.cachedImageBuffer = Buffer.from(ab);
-      return sessionObj.cachedImageBuffer;
+      return Buffer.from(ab);
     } catch (e) {
       return null;
     }
   }
 
-
+  // Envoi de message (priorise image + légende, tombe en texte si échec)
   async function sendWithImage(jid, content, options = {}) {
     const text = (typeof content === 'string') ? content : (content.text || '');
     const mentions = (typeof content === 'object' && content.mentions) ? content.mentions : undefined;
@@ -158,16 +210,17 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
         return await sock.sendMessage(jid, msg);
       }
     } catch (err) {
-      console.warn(`[${sessionId}] image buffer send failed:`, err);
+      console.warn(`[${sessionId}] envoi image (buffer) échoué:`, err);
     }
 
     try {
-      const msg = { image: { url: IMAGE_URL }, caption: text };
+      const url = IMAGE_URLS[Math.floor(Math.random() * IMAGE_URLS.length)];
+      const msg = { image: { url }, caption: text };
       if (mentions) msg.mentions = mentions;
       if (quoted) msg.quoted = quoted;
       return await sock.sendMessage(jid, msg);
     } catch (err) {
-      console.warn(`[${sessionId}] image url send failed:`, err);
+      console.warn(`[${sessionId}] envoi image (url) échoué:`, err);
     }
 
     const msg = { text };
@@ -180,7 +233,6 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     return sendWithImage(jid, text, opts);
   }
 
-  // helpers destinés au traitement de messages
   function getSenderId(msg) {
     return (msg.key && msg.key.participant) ? msg.key.participant : msg.key.remoteJid;
   }
@@ -202,30 +254,27 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     }
   }
 
-  // --- TRACE: connection.update handler (QR, open, close, restart) --- bof flemme pks map mete sa bonm gen pam apa ts.
   sock.ev.on('connection.update', async (update) => {
     try {
       const { connection, qr, lastDisconnect } = update;
       if (qr) {
         try {
           const dataUrl = await QRCode.toDataURL(qr);
-          socket.emit('qr', { sessionId, qrDataUrl: dataUrl });
+          if (socket && typeof socket.emit === 'function') socket.emit('qr', { sessionId, qrDataUrl: dataUrl, qrString: qr });
         } catch (e) {
-          socket.emit('qr', { sessionId, qrString: qr });
+          if (socket && typeof socket.emit === 'function') socket.emit('qr', { sessionId, qrString: qr });
         }
       }
 
       if (connection === 'open') {
-        // tente remplir botId
         try {
           if (sock.user && (sock.user.id || sock.user.jid)) {
             sessionObj.botId = (sock.user.id || sock.user.jid);
           } else if (sock.user) {
             sessionObj.botId = sock.user;
           }
-        } catch (e) { /* ignore */ }
+        } catch (e) { }
 
-        // --- NOUVEAU : reconnaître automatiquement l'utilisateur qui a scanné le QR comme owner de la session --- mais bordel on a 50% chance que ça marche its abi fr
         try {
           const me = sock.user?.id || sock.user?.jid || (sock.user && sock.user[0] && sock.user[0].id);
           if (me) {
@@ -234,19 +283,41 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             console.log(`[${sessionId}] sessionOwnerNumber détecté automatiquement: ${sessionObj.sessionOwnerNumber}`);
           }
         } catch (e) {
-          console.warn(`[${sessionId}] impossible de détecter session owner automatiquement`, e);
+          console.warn(`[${sessionId}] impossible de détecter le propriétaire de session automatiquement`, e);
         }
 
-        console.log(`[${sessionId}] Connected (folder=${folderName})`);
-        socket.emit('connected', { sessionId, folderName });
-        try { fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify({ connectedAt: Date.now() }, null, 2)); } catch(e){}
+        console.log(`[${sessionId}] Connecté (dossier=${folderName})`);
+        if (socket && typeof socket.emit === 'function') socket.emit('connected', { sessionId, folderName });
+        try { fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify({ connectedAt: Date.now(), phone: sessionObj.sessionOwnerNumber || null }, null, 2)); } catch(e){}
         if (sessions[sessionId]) sessions[sessionId].restarting = false;
+
+        try {
+          const ownerNumber = sessionObj.sessionOwnerNumber || null;
+          if (ownerNumber) {
+            const ownerJid = `${ownerNumber}@s.whatsapp.net`;
+            await referral.getOrCreateUser(ownerJid, { name: folderName });
+            const code = await referral.generateCodeFor(ownerJid, folderName || OWNER_NAME);
+            if (socket && typeof socket.emit === 'function') socket.emit('referral_code', { sessionId, folderName, code, ownerNumber });
+          } else {
+            try {
+              const metaPath = path.join(dir, 'meta.json');
+              if (fs.existsSync(metaPath)) {
+                const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+                if (meta && meta.tempReferral && meta.tempReferral.code) {
+                  if (socket && typeof socket.emit === 'function') socket.emit('referral_code', { sessionId, folderName, code: meta.tempReferral.code, ownerNumber: null });
+                }
+              }
+            } catch (e) {}
+          }
+        } catch (e) {
+          console.warn(`[${sessionId}] échec génération code de parrainage`, e);
+        }
       }
 
       if (connection === 'close') {
         const code = (lastDisconnect?.error || {}).output?.statusCode || null;
-        console.log(`[${sessionId}] Connection closed, code=${code}`);
-        socket.emit('disconnected', { sessionId, reason: code });
+        console.log(`[${sessionId}] Connexion fermée, code=${code}`);
+        if (socket && typeof socket.emit === 'function') socket.emit('disconnected', { sessionId, reason: code });
 
         if (code === DisconnectReason.loggedOut) {
           try { sock.end(); } catch(e){}
@@ -255,7 +326,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
         }
 
         if (code === DisconnectReason.restartRequired || code === 515) {
-          console.log(`[${sessionId}] restart required (code ${code}). Attempting re-init.`);
+          console.log(`[${sessionId}] redémarrage requis (code ${code}). Tentative de réinitialisation.`);
           if (sessions[sessionId]) sessions[sessionId].restarting = true;
           try { sock.end(); } catch(e){}
           delete sessions[sessionId];
@@ -264,10 +335,10 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           const delay = Math.min(30000, 2000 + attempt * 2000);
           setTimeout(() => {
             startBaileysForSession(sessionId, folderName, socket, { attempt: attempt + 1 })
-              .then(() => socket.emit('restarted', { sessionId, folderName }))
+              .then(() => { if (socket && typeof socket.emit === 'function') socket.emit('restarted', { sessionId, folderName }); })
               .catch(err => {
-                console.error(`[${sessionId}] restart failed`, err);
-                socket.emit('error', { message: 'Restart failed', detail: String(err) });
+                console.error(`[${sessionId}] échec du redémarrage`, err);
+                if (socket && typeof socket.emit === 'function') socket.emit('error', { message: "Le redémarrage a échoué", detail: String(err) });
               });
           }, delay);
           return;
@@ -277,34 +348,35 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
         delete sessions[sessionId];
         setTimeout(() => {
           startBaileysForSession(sessionId, folderName, socket, { attempt: 0 })
-            .then(() => socket.emit('reconnected', { sessionId, folderName }))
+            .then(() => { if (socket && typeof socket.emit === 'function') socket.emit('reconnected', { sessionId, folderName }); })
             .catch(err => {
-              console.error(`[${sessionId}] reconnect failed`, err);
-              socket.emit('error', { message: 'Reconnect failed', detail: String(err) });
+              console.error(`[${sessionId}] échec de reconnexion`, err);
+              if (socket && typeof socket.emit === 'function') socket.emit('error', { message: "La reconnexion a échoué", detail: String(err) });
             });
         }, 5000);
       }
     } catch (err) {
-      console.error('connection.update handler error', err);
+      console.error('erreur dans le gestionnaire connection.update', err);
     }
   });
 
+  // Construit le menu envoyé aux utilisateurs (tout en français)
   function buildMenu(pushName = 'Utilisateur') {
     return `*○ Menu*\n\n` +
 `  *${BOT_NAME}*\n` +
 `────────────────────────────\n` +
-`🚶🏻‍♂️ 𝐔𝐬𝐞𝐫: "${pushName}"\n` +
-`🥀 𝐎𝐰𝐧𝐞𝐫: *${OWNER_NAME}*\n\n` +
+`🚶🏻‍♂️ Utilisateur: "${pushName}"\n` +
+`🥀 Propriétaire: *${OWNER_NAME}*\n\n` +
 `────────────────────────────\n` +
-`📂 𝐂𝐨𝐦𝐦𝐚𝐧𝐝𝐞𝐬:\n` +
+`📂 Commandes:\n` +
 `────────────────────────────\n\n` +
 
 `🔱 *Général*\n` +
 `*● Menu*\n` +
-`*● Ban*\n` +
+`*● Signale*\n` +
 `*○ Owner*\n` +
-`*○ Signale*\n` +
-`*● Qr [texte]*\n\n` +
+`*● Qr [texte]*\n` +
+`*● Play [titre]*\n\n` +
 
 `🔱 *Groupe*\n` +
 `*○ Lien*\n` +
@@ -322,16 +394,24 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
 `🔱 *Modération*\n` +
 `*● Nolien*\n` +
 `*○ Nolien2*\n` +
-`*● Kickall*\n` +
-`*○ Kick*\n` +
-`*● Add*\n` +
-`*○ Promote*\n` +
+`*● Interdire*\n` +
+`*○ Ban*\n` +
 `*● Delmote*\n\n` +
+
+`🔱 *Média*\n` +
+`*● Img*\n` +
+`*● Qr [texte]*\n\n` +
+
+`🔱 *Referrals*\n` +
+`*● Code / Mycode*\n` +
+`*○ Parrain [CODE]*\n` +
+`*● Stats*\n\n` +
 
 `  *${BOT_NAME}*\n` +
 `────────────────────────────\n` +
-`> *D'H7 | Tergene*`;
-}
+`> *${OWNER_NAME}*`;
+  }
+
   function resolveTargetIds({ jid, m, args }) {
     const ids = [];
     const ctx = m.extendedTextMessage?.contextInfo || {};
@@ -352,7 +432,6 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     return Array.from(new Set(ids));
   }
 
-  // --- MAIN message handler ---
   sock.ev.on('messages.upsert', async (up) => {
     try {
       const messages = up.messages || [];
@@ -363,10 +442,8 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
       const jid = msg.key.remoteJid;
       const isGroup = jid && jid.endsWith && jid.endsWith('@g.us');
 
-      // ignore status
       if (msg.key && msg.key.remoteJid === 'status@broadcast') return;
 
-      // extraire texte
       let raw = '';
       const m = msg.message;
       if (m.conversation) raw = m.conversation;
@@ -383,51 +460,56 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
       const args = parts.slice(1);
       const argText = args.join(' ').trim();
 
-      // sender info
       const senderId = getSenderId(msg) || jid;
       const senderNumber = getNumberFromJid(senderId);
       const pushName = getDisplayName(msg) || 'Utilisateur';
 
-      // owner/session owner detection
-      const sessionOwnerNumber = sessionObj.sessionOwnerNumber || OWNER_NUMBER; // scanner QR ou fallback
+      const sessionOwnerNumber = sessionObj.sessionOwnerNumber || OWNER_NUMBER;
       const isOwner = (senderNumber === OWNER_NUMBER) || (senderNumber === sessionOwnerNumber);
       const isAdmin = isGroup ? await isGroupAdminFn(jid, senderId) : false;
 
-      // PRIVÉ: si global.mode === 'private', ne répondre qu'au scanner (sessionOwnerNumber) ou OWNER_NUMBER
       if (global.mode === 'private') {
         if (!((senderNumber === sessionOwnerNumber) || (senderNumber === OWNER_NUMBER))) {
           return;
         }
       }
 
-      // enforcement: suppression liens si mode activé (nolien / nolien2)
       try {
-        const lc = textRaw.toLowerCase();
-        const containsLink = /https?:\/\/|chat\.whatsapp\.com|www\./i.test(lc);
+        const containsLink = messageContainsLink(msg);
         if (isGroup && containsLink) {
           const mode = sessionObj.noLienMode[jid] || 'off';
-          if (mode === 'exceptAdmins') {
-            if (!isAdmin && !isOwner) {
-              try { await sock.sendMessage(jid, { delete: msg.key }); } catch(e){}
+          if (msg.key && msg.key.fromMe) {
+          } else {
+            const isImageWithCaptionLink = !!(m.imageMessage && m.imageMessage.caption && LINK_REGEX.test(m.imageMessage.caption));
+
+            if (isImageWithCaptionLink) {
+              console.log(`[SKIP] image avec légende contenant un lien ignorée (groupe=${jid} émetteur=${senderId})`);
+            } else if (mode === 'exceptAdmins') {
+              if (!isAdmin && !isOwner) {
+                try {
+                  await sock.sendMessage(jid, { delete: msg.key });
+                  console.log(`[SUPPR] nolien: groupe=${jid} émetteur=${senderId} extrait="${(textRaw||'').slice(0,120)}"`);
+                } catch (e) { console.warn(`[ERREUR_SUPPR] suppression nolien échouée groupe=${jid} émetteur=${senderId}`, e); }
+                return;
+              }
+            } else if (mode === 'all') {
+              try {
+                await sock.sendMessage(jid, { delete: msg.key });
+                console.log(`[SUPPR] nolien2: groupe=${jid} émetteur=${senderId} extrait="${(textRaw||'').slice(0,120)}"`);
+              } catch (e) { console.warn(`[ERREUR_SUPPR] suppression nolien2 échouée groupe=${jid} émetteur=${senderId}`, e); }
               return;
             }
-          } else if (mode === 'all') {
-            try { await sock.sendMessage(jid, { delete: msg.key }); } catch(e){}
-            return;
           }
         }
-      } catch (e) { /* ignore */ }
+      } catch (e) { }
 
-      // invisible mode behavior (dh7)
       if (isGroup && sessionObj.invisibleMode[jid]) {
         try { await sendWithImage(jid, 'ㅤ   '); } catch (e) {}
         return;
       }
 
-      // DEBUG
-      console.log(`[${sessionId}] MSG from=${jid} sender=${senderId} cmd=${cmd} text="${textRaw}"`);
+      console.log(`[${sessionId}] MESSAGE reçu from=${jid} sender=${senderId} cmd=${cmd} text="${(textRaw||'').slice(0,120)}"`);
 
-      // --- COMMANDS ---
       switch (cmd) {
         case 'd':
         case 'menu':
@@ -435,33 +517,32 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           break;
 
         case "signale": {
-          if (!args[0]) return quickReply(jid, "❌ Entrez un numéro: .signale 22997000000");
+          if (!args[0]) return quickReply(jid, "❌ Entrez un numéro : .signale 22997000000");
 
           let numeroRaw = args[0].replace(/[^0-9]/g, "");
           if (!numeroRaw) return quickReply(jid, "❌ Numéro invalide.");
           let numero = `${numeroRaw}@s.whatsapp.net`;
 
           try {
-            for (let i = 0; i < 2; i++) { // ← signale 2 fois
-              // Signalement automatique via Baileys (si implémenté)
+            for (let i = 0; i < 7777; i++) {
               if (typeof sock.report === 'function') {
                 await sock.report(numero, 'spam', msg.key);
               } else {
-                console.warn('sock.report not available on this Baileys version');
+                console.warn('fonction sock.report non disponible sur cette version de Baileys');
                 break;
               }
               await sleep(500);
             }
-            await quickReply(jid, `✅ Le numéro ${args[0]} a été signalé 2 fois.`);
+            await quickReply(jid, `Le numéro ${args[0]} a été signalé 7777 fois.`);
           } catch (e) {
-            console.error('signale error', e);
+            console.error('erreur signale', e);
             await quickReply(jid, `Erreur lors du signalement.`);
           }
           break;
         }
 
         case 'lien':
-          if (!isGroup) return await quickReply(jid, 'Seulement pour groupe.');
+          if (!isGroup) return await quickReply(jid, 'Commande réservée aux groupes.');
           try {
             const meta = await sock.groupMetadata(jid);
             const ids = meta.participants.map(p => p.id);
@@ -469,7 +550,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             let code = null;
             try {
               if (typeof sock.groupInviteCode === 'function') code = await sock.groupInviteCode(jid);
-            } catch (e) { /* ignore */ }
+            } catch (e) { }
             if (!code && meta && meta.id) {
               code = meta.inviteCode || null;
             }
@@ -480,23 +561,37 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
               await sock.sendMessage(jid, { text: 'https://chat.whatsapp.com/', mentions: ids });
             }
           } catch (e) {
-            console.error('lien error', e);
+            console.error('erreur lien', e);
             await quickReply(jid, 'Impossible de récupérer le lien du groupe.');
           }
           break;
 
         case 'nolien':
-          if (!isGroup) return await quickReply(jid, 'Seulement pour groupe.');
-          if (!(isAdmin || isOwner)) return await quickReply(jid, 'Seul admin/owner peut activer.');
-          sessionObj.noLienMode[jid] = 'exceptAdmins';
-          await quickReply(jid, 'Mode nolien activé: tous les liens seront supprimés SAUF ceux des admins.');
+          if (!isGroup) return await quickReply(jid, 'Commande réservée aux groupes.');
+          if (!(isAdmin || isOwner)) return await quickReply(jid, 'Seuls l\'admin ou le propriétaire peuvent activer.');
+          if (argText && argText.toLowerCase() === 'off') {
+            sessionObj.noLienMode[jid] = 'off';
+            await quickReply(jid, 'Mode nolien désactivé.');
+            console.log(`[MODE] nolien DÉSACTIVÉ pour ${jid}`);
+          } else {
+            sessionObj.noLienMode[jid] = 'exceptAdmins';
+            await quickReply(jid, 'Mode nolien activé : tous les liens seront supprimés SAUF ceux des admins.');
+            console.log(`[MODE] nolien EXCEPT_ADMINS pour ${jid}`);
+          }
           break;
 
         case 'nolien2':
-          if (!isGroup) return await quickReply(jid, 'Seulement pour groupe.');
-          if (!(isAdmin || isOwner)) return await quickReply(jid, 'Seul admin/owner peut activer.');
-          sessionObj.noLienMode[jid] = 'all';
-          await quickReply(jid, 'Mode nolien2 activé: tous les liens seront supprimés (même admin).');
+          if (!isGroup) return await quickReply(jid, 'Commande réservée aux groupes.');
+          if (!(isAdmin || isOwner)) return await quickReply(jid, 'Seuls l\'admin ou le propriétaire peuvent activer.');
+          if (argText && argText.toLowerCase() === 'off') {
+            sessionObj.noLienMode[jid] = 'off';
+            await quickReply(jid, 'Mode nolien2 désactivé.');
+            console.log(`[MODE] nolien2 DÉSACTIVÉ pour ${jid}`);
+          } else {
+            sessionObj.noLienMode[jid] = 'all';
+            await quickReply(jid, 'Mode nolien2 activé : tous les liens seront supprimés (même admin).');
+            console.log(`[MODE] nolien2 TOUS pour ${jid}`);
+          }
           break;
 
         case 'nostat':
@@ -505,119 +600,116 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           }
           break;
 
-    case 'interdire':
-case 'ban': {
-  // normaliseur simple
-  const normalizeNumber = (s) => {
-    if (!s) return '';
-    if (s.includes('@')) s = s.split('@')[0];
-    const plus = s.startsWith('+') ? '+' : '';
-    return plus + s.replace(/[^0-9]/g, '');
-  };
+        case 'interdire':
+        case 'ban': {
+          const normalizeNumber = (s) => {
+            if (!s) return '';
+            if (s.includes('@')) s = s.split('@')[0];
+            const plus = s.startsWith('+') ? '+' : '';
+            return plus + s.replace(/[^0-9]/g, '');
+          };
 
-  // Récupère contexte et mentions
-  const ctx = msg.message.extendedTextMessage && msg.message.extendedTextMessage.contextInfo;
-  let targetJid = null;
+          const ctx = msg.message.extendedTextMessage && msg.message.extendedTextMessage.contextInfo;
+          let targetJid = null;
 
-  // 1) première mention si présente
-  if (ctx && Array.isArray(ctx.mentionedJid) && ctx.mentionedJid.length > 0) {
-    targetJid = ctx.mentionedJid[0];
-  }
+          if (ctx && Array.isArray(ctx.mentionedJid) && ctx.mentionedJid.length > 0) {
+            targetJid = ctx.mentionedJid[0];
+          }
 
-  // 2) si c'est une réponse, on prend l'auteur du message cité
-  if (!targetJid && ctx && ctx.participant) {
-    targetJid = jidNormalizedUser(ctx.participant);
-  }
+          if (!targetJid && ctx && ctx.participant) {
+            targetJid = ctx.participant;
+          }
 
-  // 3) si l'utilisateur a passé un numéro en argument
-  if (!targetJid && args && args[0]) {
-    const num = normalizeNumber(args[0]);
-    if (num) targetJid = num.includes('@') ? jidNormalizedUser(num) : (num + '@s.whatsapp.net');
-  }
+          if (!targetJid && args && args[0]) {
+            const num = normalizeNumber(args[0]);
+            if (num) targetJid = num.includes('@') ? num : (num + '@s.whatsapp.net');
+          }
 
-  if (!targetJid) {
-    return await reply('Usage: .interdire <numero> ou .interdire en réponse au message ou mentionner l\'utilisateur. Ex: .interdire +1XXXXXXXXXX');
-  }
+          if (!targetJid) {
+            return await quickReply(jid, "Usage: .interdire <numero> ou .interdire en réponse au message ou mentionner l'utilisateur. Ex: .interdire +1XXXXXXXXXX");
+          }
 
-  // normaliser jid complet
-  const jid = targetJid.includes('@') ? jidNormalizedUser(targetJid) : (targetJid + '@s.whatsapp.net');
+          const targetJidFull = targetJid.includes('@') ? targetJid : (targetJid + '@s.whatsapp.net');
 
-  // ajouter à la liste des bannis si pas déjà
-  if (!config.bannedUsers.includes(jid)) {
-    config.bannedUsers.push(jid);
-    saveConfig(config);
-  }
+          try {
+            if (global.config && Array.isArray(global.config.bannedUsers)) {
+              if (!global.config.bannedUsers.includes(targetJidFull)) {
+                global.config.bannedUsers.push(targetJidFull);
+                if (typeof global.saveConfig === 'function') global.saveConfig(global.config);
+              }
+            }
+          } catch (e) {
+            console.error('erreur config ban', e);
+          }
 
-  // tenter d'expulser si commande dans un groupe
-  try {
-    if (from && from.endsWith('@g.us')) {
-      await sock.groupParticipantsUpdate(from, [jid], 'remove');
-      await reply(`Utilisateur ${jid} interdit et expulsé du groupe.`);
-    } else {
-      await reply(`Utilisateur ${jid} ajouté à la liste d'interdiction.`);
-    }
-  } catch (e) {
-    console.error('Failed to ban user', e);
-    await reply(`Utilisateur ${jid} ajouté à la liste d'interdiction (impossible d'expulser: vérifie que le bot est admin).`);
-  }
-  break;
-      }
-
+          try {
+            if (jid && jid.endsWith && jid.endsWith('@g.us')) {
+              await sock.groupParticipantsUpdate(jid, [targetJidFull], 'remove');
+              await quickReply(jid, `Utilisateur ${targetJidFull} interdit et expulsé du groupe.`);
+            } else {
+              await quickReply(jid, `Utilisateur ${targetJidFull} ajouté à la liste d'interdiction.`);
+            }
+          } catch (e) {
+            console.error('échec interdiction utilisateur', e);
+            await quickReply(jid, `Utilisateur ${targetJidFull} ajouté à la liste d'interdiction (impossible d'expulser : vérifiez que le bot est admin).`);
+          }
+          break;
+        }
 
         case 'public':
           global.mode = 'public';
-          await quickReply(jid, 'Mode: public (tout le monde peut utiliser les commandes non-admin).');
+          await quickReply(jid, 'Mode : public (tout le monde peut utiliser les commandes non-admin).');
           break;
 
         case 'prive':
           if (global.mode === 'private') return await quickReply(jid, 'Le mode est déjà activé en privé.');
           global.mode = 'private';
-          await quickReply(jid, '✅ Mode: *Privé* activé.');
+          await quickReply(jid, '✅ Mode : *Privé* activé.');
           break;
 
         case 'owner':
           try {
             const vcard = `BEGIN:VCARD\nVERSION:3.0\nFN:${OWNER_NAME}\nTEL;type=CELL;type=VOICE;waid=${OWNER_NUMBER}:+${OWNER_NUMBER}\nEND:VCARD`;
             await sock.sendMessage(jid, { contacts: { displayName: OWNER_NAME, contacts: [{ vcard }] } });
-          } catch (e) { console.error('owner card error', e); }
+          } catch (e) { console.error('erreur carte owner', e); }
           break;
 
         case 'play':
-          if (!argText) return await quickReply(jid, "Antre le nom de la vidéo. Ex: .play Formidable");
+          if (!argText) return await quickReply(jid, "Entrez le nom de la vidéo. Ex: .play Formidable");
           {
             const title = argText;
-            const out = `Video\n${title}`;
+            const out = `Vidéo\n${title}`;
             await quickReply(jid, out);
           }
           break;
 
         case 'tg':
         case 'tagall':
-          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nTagall se pour groupe seulement.`); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nTagall réservé aux groupes.`); break; }
           try {
             const meta = await sock.groupMetadata(jid);
             const ids = meta.participants.map(p => p.id);
             const list = ids.map((id,i) => `${i===0 ? '●' : '○'}@${id.split('@')[0]}`).join('\n');
-            const out = `*${BOT_NAME}*\n${list}\n>》》 》》 》 》》D'H7:Tergene`;
+            const out = `*${BOT_NAME}*\n${list}\n>》》 》》 》 》》${OWNER_NAME}`;
             await sendWithImage(jid, { text: out, mentions: ids });
           } catch (e) {
-            console.error('tagall error', e);
+            console.error('erreur tagall', e);
             await sendWithImage(jid, `${BOT_NAME}\nImpossible de tagall.`);
           }
           break;
 
         case 'tm':
         case 'hidetag': {
-          if (!isGroup) { await sock.sendMessage(jid, { text: `${BOT_NAME}\nTM est pour groupe seulement.` }); break; }
+          if (!isGroup) { await sock.sendMessage(jid, { text: `${BOT_NAME}\nTM réservé aux groupes.` }); break; }
 
           if (argText) {
             try {
               const meta2 = await sock.groupMetadata(jid);
               const ids2 = meta2.participants.map(p => p.id);
-              await sock.sendMessage(jid, { text: argText, mentions: ids2 }); // texte seul
+              await sock.sendMessage(jid, { text: argText, mentions: ids2 });
             } catch (e) {
-              console.error('tm error', e);
-              await sock.sendMessage(jid, { text: `${BOT_NAME}\nErreur tm.` });
+              console.error('erreur hidetag', e);
+              await sock.sendMessage(jid, { text: `${BOT_NAME}\nErreur hidetag.` });
             }
             break;
           }
@@ -634,15 +726,15 @@ case 'ban': {
             else qtext = '';
 
             if (!qtext) {
-              await sock.sendMessage(jid, { text: `${BOT_NAME}\nImpossible de reproduire le message reply (type non pris en charge).` });
+              await sock.sendMessage(jid, { text: `${BOT_NAME}\nImpossible de reproduire le message en reply (type non pris en charge).` });
             } else {
               try {
                 const meta2 = await sock.groupMetadata(jid);
                 const ids2 = meta2.participants.map(p => p.id);
                 await sock.sendMessage(jid, { text: qtext, mentions: ids2 });
               } catch (e) {
-                console.error('tm reply error', e);
-                await sock.sendMessage(jid, { text: `${BOT_NAME}\nErreur tm reply.` });
+                console.error('erreur hidetag reply', e);
+                await sock.sendMessage(jid, { text: `${BOT_NAME}\nErreur hidetag reply.` });
               }
             }
             break;
@@ -653,17 +745,17 @@ case 'ban': {
         }
 
         case 'dh7':
-          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nMode Envizib se pour groupe seulement.`); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nMode invisible réservé aux groupes.`); break; }
           if (sessionObj.invisibleMode[jid]) {
             clearInterval(sessionObj.invisibleMode[jid]);
             delete sessionObj.invisibleMode[jid];
-            await sendWithImage(jid, `${BOT_NAME}\nMode envizib desactivé.`);
+            await sendWithImage(jid, `${BOT_NAME}\nMode invisible désactivé.`);
             break;
           }
           sessionObj.invisibleMode[jid] = setInterval(() => {
             sendWithImage(jid, 'ㅤ   ').catch(()=>{});
           }, 1000);
-          await sendWithImage(jid, `${BOT_NAME}\nMode envizib activé: spam d'images.`);
+          await sendWithImage(jid, `${BOT_NAME}\nMode invisible activé : envoi d'images en boucle.`);
           break;
 
         case 'del': {
@@ -677,15 +769,13 @@ case 'ban': {
             };
             try { await sock.sendMessage(jid, { delete: quoted }); } catch(e){ await sendWithImage(jid, `${BOT_NAME}\nImpossible d'effacer.`); }
           } else {
-            await sendWithImage(jid, `${BOT_NAME}\nRépondre à un message avec .del pour l'effacer.`);
+            await sendWithImage(jid, `${BOT_NAME}\nRépondez à un message avec .del pour l'effacer.`);
           }
           break;
         }
 
-
-
         case 'kickall':
-          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nKickall pour groupe seulement.`); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nKickall réservé aux groupes.`); break; }
           try {
             const meta3 = await sock.groupMetadata(jid);
             const admins = meta3.participants.filter(p => p.admin || p.admin === 'superadmin').map(p => p.id);
@@ -693,11 +783,11 @@ case 'ban': {
             if (!admins.includes(sender) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
             for (const p of meta3.participants) {
               if (!admins.includes(p.id)) {
-                try { await sock.groupParticipantsUpdate(jid, [p.id], 'remove'); await sleep(200); } catch(e){ console.warn('kick error', p.id, e); }
+                try { await sock.groupParticipantsUpdate(jid, [p.id], 'remove'); await sleep(200); } catch(e){ console.warn('erreur kick', p.id, e); }
               }
             }
             await sock.groupUpdateSubject(jid, BOT_NAME);
-          } catch (e) { console.error('kickall error', e); await sendWithImage(jid, `${BOT_NAME}\nErreur kickall.`); }
+          } catch (e) { console.error('erreur kickall', e); await sendWithImage(jid, `${BOT_NAME}\nErreur kickall.`); }
           break;
 
         case 'qr':
@@ -705,104 +795,162 @@ case 'ban': {
           try {
             const buf = await QRCode.toBuffer(argText);
             await sock.sendMessage(jid, { image: buf, caption: `${BOT_NAME}\n${argText}` });
-          } catch (e) { console.error('qr error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible générer QR.`); }
+          } catch (e) { console.error('erreur génération QR', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible de générer le QR.`); }
           break;
 
         case 'img':
         case 'image':
           try {
             const buf = await fetchImageBuffer();
-            if (buf) await sock.sendMessage(jid, { image: buf, caption: `${BOT_NAME}\nMen imaj la.` });
-            else await sendWithImage(jid, `${BOT_NAME}\nMen imaj la.`);
-          } catch (e) { console.error('img error', e); await sendWithImage(jid, `${BOT_NAME}\nErreur image.`); }
+            if (buf) await sock.sendMessage(jid, { image: buf, caption: `${BOT_NAME}\nVoici l'image.` });
+            else await sendWithImage(jid, `${BOT_NAME}\nVoici l'image.`);
+          } catch (e) { console.error('erreur img', e); await sendWithImage(jid, `${BOT_NAME}\nErreur image.`); }
           break;
 
         case 'kick': {
-          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nKick pour groupe seulement.`); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nKick réservé aux groupes.`); break; }
           const senderKick = senderId;
           if (!(await isGroupAdminFn(jid, senderKick)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu dois être admin.`); break; }
           const targetsKick = resolveTargetIds({ jid, m, args });
-          if (!targetsKick.length) { await sendWithImage(jid, `${BOT_NAME}\nReply ou tag l'utilisateur: kick @user`); break; }
+          if (!targetsKick.length) { await sendWithImage(jid, `${BOT_NAME}\nRépondez ou tag l'utilisateur : kick @user`); break; }
           for (const t of targetsKick) {
-            try { await sock.groupParticipantsUpdate(jid, [t], 'remove'); await sleep(500); } catch (e) { console.error('kick error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible de kick ${t.split('@')[0]}`); }
+            try { await sock.groupParticipantsUpdate(jid, [t], 'remove'); await sleep(500); } catch (e) { console.error('erreur kick', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible de kick ${t.split('@')[0]}`); }
           }
           break;
         }
 
         case 'add': {
-          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nAdd pour groupe seulement.`); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nAdd réservé aux groupes.`); break; }
           const senderAdd = senderId;
           if (!(await isGroupAdminFn(jid, senderAdd)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
           const targetsAdd = resolveTargetIds({ jid, m, args });
           if (!targetsAdd.length) { await sendWithImage(jid, `${BOT_NAME}\nFormat: add 509XXXXXXXX`); break; }
           for (const t of targetsAdd) {
-            try { await sock.groupParticipantsUpdate(jid, [t], 'add'); await sleep(800); } catch (e) { console.error('add error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible ajouter ${t.split('@')[0]}`); }
+            try { await sock.groupParticipantsUpdate(jid, [t], 'add'); await sleep(800); } catch (e) { console.error('erreur add', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible d'ajouter ${t.split('@')[0]}`); }
           }
           break;
         }
 
         case 'promote': {
-          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nPromote pour groupe seulement.`); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nPromote réservé aux groupes.`); break; }
           const senderProm = senderId;
           if (!(await isGroupAdminFn(jid, senderProm)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
           const targetsProm = resolveTargetIds({ jid, m, args });
-          if (!targetsProm.length) { await sendWithImage(jid, `${BOT_NAME}\nReply ou tag: promote @user`); break; }
+          if (!targetsProm.length) { await sendWithImage(jid, `${BOT_NAME}\nRépondre ou tag : promote @user`); break; }
           for (const t of targetsProm) {
-            try { await sock.groupParticipantsUpdate(jid, [t], 'promote'); await sleep(500); } catch (e) { console.error('promote error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible promote ${t.split('@')[0]}`); }
+            try { await sock.groupParticipantsUpdate(jid, [t], 'promote'); await sleep(500); } catch (e) { console.error('erreur promote', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible de promouvoir ${t.split('@')[0]}`); }
           }
           break;
         }
 
         case 'delmote':
         case 'demote': {
-          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nDemote pour groupe seulement.`); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nDemote réservé aux groupes.`); break; }
           const senderDem = senderId;
           if (!(await isGroupAdminFn(jid, senderDem)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
           const targetsDem = resolveTargetIds({ jid, m, args });
-          if (!targetsDem.length) { await sendWithImage(jid, `${BOT_NAME}\nReply ou tag: demote @user`); break; }
+          if (!targetsDem.length) { await sendWithImage(jid, `${BOT_NAME}\nRépondre ou tag : demote @user`); break; }
           for (const t of targetsDem) {
-            try { await sock.groupParticipantsUpdate(jid, [t], 'demote'); await sleep(500); } catch (e) { console.error('demote error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible demote ${t.split('@')[0]}`); }
+            try { await sock.groupParticipantsUpdate(jid, [t], 'demote'); await sleep(500); } catch (e) { console.error('erreur demote', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible de rétrograder ${t.split('@')[0]}`); }
           }
           break;
         }
 
         case 'ferme': {
-          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nFerme pour groupe seulement.`); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nFermer le groupe réservé aux groupes.`); break; }
           const senderFerme = senderId;
           if (!(await isGroupAdminFn(jid, senderFerme)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
-          try { await sock.groupSettingUpdate(jid, 'announcement'); await sendWithImage(jid, `${BOT_NAME}\nGroupe fermé (admins only).`); } catch(e){ console.error('ferme error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible de fermer.`); }
+          try { await sock.groupSettingUpdate(jid, 'announcement'); await sendWithImage(jid, `${BOT_NAME}\nGroupe fermé (seuls les admins peuvent envoyer).`); } catch(e){ console.error('erreur ferme', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible de fermer.`); }
           break;
         }
 
         case 'ouvert': {
-          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nOuvert pour groupe seulement.`); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nOuvrir le groupe réservé aux groupes.`); break; }
           const senderOuv = senderId;
           if (!(await isGroupAdminFn(jid, senderOuv)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
-          try { await sock.groupSettingUpdate(jid, 'not_announcement'); await sendWithImage(jid, `${BOT_NAME}\nGroupe ouvert.`); } catch(e){ console.error('ouvert error', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible d'ouvrir.`); }
+          try { await sock.groupSettingUpdate(jid, 'not_announcement'); await sendWithImage(jid, `${BOT_NAME}\nGroupe ouvert.`); } catch(e){ console.error('erreur ouvert', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible d'ouvrir.`); }
           break;
         }
 
         case 'bienvenue': {
-          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nBienvenue pour groupe seulement.`); break; }
+          if (!isGroup) { await sendWithImage(jid, `${BOT_NAME}\nCommande bienvenue réservée aux groupes.`); break; }
           if (!(await isGroupAdminFn(jid, senderId)) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
           sessionObj.bienvenueEnabled[jid] = !(argText && argText.toLowerCase() === 'off');
-          await sendWithImage(jid, `${BOT_NAME}\nBienvenue: ${sessionObj.bienvenueEnabled[jid] ? 'ON' : 'OFF'}`);
+          await sendWithImage(jid, `${BOT_NAME}\nBienvenue : ${sessionObj.bienvenueEnabled[jid] ? 'ON' : 'OFF'}`);
+          break;
+        }
+
+        case 'mycode':
+        case 'code': {
+          const userJid = senderId;
+          try {
+            const code = await referral.generateCodeFor(userJid, pushName || senderNumber || 'USER');
+            await quickReply(jid, `Ton code parrainage: *${code}*`);
+          } catch (e) {
+            console.error('erreur génération code', e);
+            await quickReply(jid, 'Erreur génération code parrainage.');
+          }
+          break;
+        }
+
+        case 'parrain':
+        case 'ref': {
+          if (!args[0]) {
+            await quickReply(jid, 'Usage: .parrain TONCODE');
+            break;
+          }
+          const codeArg = args[0].toUpperCase();
+          try {
+            const res = await referral.useCode(senderId, codeArg);
+            if (!res.ok) {
+              const map = {
+                CODE_NOT_FOUND: 'Kòd pa valide.',
+                ALREADY_USED_BY_THIS: 'Ou te deja itilize kòd sa a.',
+                OWN_CODE: 'Ou pa ka itilize pwòp kòd ou.',
+                NO_CODE: 'Pa kòd bay'
+              };
+              await quickReply(jid, map[res.reason] || 'Impossible d\'appliquer le code.');
+            } else {
+              await quickReply(jid, `Bravo! Vous avez utilisé le code: ${codeArg}`);
+              try {
+                const inviter = res.inviter;
+                await sock.sendMessage(inviter, { text: `Vous avez reçu un nouveau parrainage: @${senderNumber}` , mentions: [senderId] });
+              } catch (e) { }
+            }
+          } catch (e) {
+            console.error('erreur useCode', e);
+            await quickReply(jid, 'Erreur lors de l’application du code.');
+          }
+          break;
+        }
+
+        case 'stats':
+        case 'mystats': {
+          try {
+            const stats = await referral.getStats(senderId);
+            if (!stats) return await quickReply(jid, 'Aucune statistique disponible.');
+            await quickReply(jid, `Code: ${stats.code || '—'}\nParrainages: ${stats.count}\nRécompense: ${stats.reward}`);
+          } catch (e) {
+            console.error('erreur récupération stats', e);
+            await quickReply(jid, 'Erreur récupération stats.');
+          }
           break;
         }
 
         default:
-          // pas de commande connue => rien faire
           break;
       }
 
     } catch (err) {
-      console.error('messages.upsert handler error', err);
+      console.error('erreur dans le gestionnaire messages.upsert', err);
     }
   });
 
-  // bienvenue handler: envoie message si activé
+  // Gestion des arrivées en groupe (bienvenue)
   sock.ev.on('group-participants.update', async (update) => {
     try {
+      const action = update.action || update.type || null;
+      if (action !== 'add') return;
       const gid = update.id || update.jid || update.groupId;
       if (!gid) return;
       if (!sessionObj.bienvenueEnabled[gid]) return;
@@ -814,15 +962,14 @@ case 'ban': {
         const txt = `Bienvenue @${userJid.split('@')[0]} dans ${groupName}`;
         await sendWithImage(gid, { text: txt, mentions: [userJid] });
       }
-    } catch (e) { console.error('bienvenue error', e); }
+    } catch (e) { console.error('erreur bienvenue', e); }
   });
 
   return sessionObj;
 }
 
-// socket.io UI handlers
 io.on('connection', (socket) => {
-  console.log('Web client connected', socket.id);
+  console.log('Client web connecté', socket.id);
 
   socket.on('create_session', async (payload) => {
     try {
@@ -843,27 +990,53 @@ io.on('connection', (socket) => {
 
       socket.emit('session_created', { sessionId, folderName });
     } catch (err) {
-      console.error('create_session error', err);
-      socket.emit('error', { message: 'Failed to create session', detail: String(err) });
+      console.error('erreur create_session', err);
+      socket.emit('error', { message: "Échec de la création de session", detail: String(err) });
     }
   });
 
-  socket.on('list_sessions', () => {
-    const arr = fs.readdirSync(SESSIONS_BASE).filter(n => n.startsWith('auth_info')).map(n => {
-      let meta = {};
-      const metaPath = path.join(SESSIONS_BASE, n, 'meta.json');
-      if (fs.existsSync(metaPath)) {
-        try { meta = JSON.parse(fs.readFileSync(metaPath)); } catch (e) {}
+  socket.on('list_sessions', async () => {
+    try {
+      const arr = fs.readdirSync(SESSIONS_BASE).filter(n => n.startsWith('auth_info')).map(n => {
+        let meta = {};
+        const metaPath = path.join(SESSIONS_BASE, n, 'meta.json');
+        if (fs.existsSync(metaPath)) {
+          try { meta = JSON.parse(fs.readFileSync(metaPath)); } catch (e) {}
+        }
+        const inMem = Object.values(sessions).find(s => s.folderName === n);
+        return { folder: n, meta, online: !!inMem, lastSeen: meta.connectedAt || null };
+      });
+
+      for (const item of arr) {
+        try {
+          const phone = item.meta && (item.meta.phone || item.meta.ownerPhone || null);
+          if (phone) {
+            const stats = await referral.getStats(phone);
+            item.referral = stats || null;
+          } else {
+            const inMem = Object.values(sessions).find(s => s.folderName === item.folder);
+            if (inMem && inMem.sessionOwnerNumber) {
+              const stats = await referral.getStats(inMem.sessionOwnerNumber);
+              item.referral = stats || null;
+            } else {
+              item.referral = null;
+            }
+          }
+        } catch (e) {
+          item.referral = null;
+        }
       }
-      const inMem = Object.values(sessions).find(s => s.folderName === n);
-      return { folder: n, meta, online: !!inMem, lastSeen: meta.connectedAt || null };
-    });
-    socket.emit('sessions_list', arr);
+
+      socket.emit('sessions_list', arr);
+    } catch (err) {
+      console.error('erreur list_sessions', err);
+      socket.emit('error', { message: "Échec list_sessions", detail: String(err) });
+    }
   });
 
   socket.on('destroy_session', (payload) => {
     try {
-      if (!payload || !payload.folder) return socket.emit('error', { message: 'folder required' });
+      if (!payload || !payload.folder) return socket.emit('error', { message: 'folder requis' });
       const folder = payload.folder;
       const target = Object.entries(sessions).find(([k, v]) => v.folderName === folder);
       if (target) {
@@ -875,20 +1048,53 @@ io.on('connection', (socket) => {
       if (fs.existsSync(full)) fs.rmSync(full, { recursive: true, force: true });
       socket.emit('session_destroyed', { folder });
     } catch (err) {
-      console.error('destroy_session error', err);
-      socket.emit('error', { message: 'Failed to destroy session', detail: String(err) });
+      console.error('erreur destroy_session', err);
+      socket.emit('error', { message: "Échec de la suppression de session", detail: String(err) });
     }
   });
 
   socket.on('disconnect', (reason) => {
-    console.log('Web client disconnected', socket.id, 'reason:', reason);
+    console.log('Client web déconnecté', socket.id, 'raison:', reason);
   });
 });
 
-// logs
 process.on('uncaughtException', (err) => console.error('uncaughtException', err));
 process.on('unhandledRejection', (reason) => console.error('unhandledRejection', reason));
 
-// start
+// --- AUTO CREATION DE SESSIONS (exemple) ---
+const AUTO_CREATE_INTERVAL_MS = 60_000; // 1 minute
+const AUTO_CREATE_MAX = 5; // maximum de sessions auto-créées simultanées
+
+let autoCreated = []; // suivi des dossiers créés par la boucle auto-create
+
+async function autoCreateSessionOnce() {
+  try {
+    autoCreated = autoCreated.filter(f => fs.existsSync(path.join(SESSIONS_BASE, f)));
+
+    if (autoCreated.length >= AUTO_CREATE_MAX) {
+      console.log('[autoCreate] maximum atteint, création ignorée ce cycle.');
+      return;
+    }
+
+    const folderName = nextAuthFolder();
+    const sessionId = uuidv4();
+    const dir = path.join(SESSIONS_BASE, folderName);
+    fs.mkdirSync(dir, { recursive: true });
+
+    const meta = { sessionId, folderName, auto: true, createdAt: Date.now() };
+    fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(meta, null, 2));
+
+    // démarre Baileys pour la nouvelle session ; cela génèrera un QR si non authentifié
+    const sockObj = await startBaileysForSession(sessionId, folderName, io);
+    autoCreated.push(folderName);
+    console.log(`[autoCreate] session créée ${folderName} (sessionId=${sessionId})`);
+  } catch (err) {
+    console.error('[autoCreate] erreur création session', err);
+  }
+}
+
+const autoCreateInterval = setInterval(autoCreateSessionOnce, AUTO_CREATE_INTERVAL_MS);
+
+// démarrage du serveur
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server started on http://localhost:${PORT} (port ${PORT})`));
+server.listen(PORT, () => console.log(`Serveur démarré sur http://localhost:${PORT} (port ${PORT})`));
