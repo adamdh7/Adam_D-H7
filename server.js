@@ -1,6 +1,5 @@
 // server.js
-// Version améliorée : corrections, gestion des gros médias pour la commande "voir",
-// suppression robuste, messages en français, et quelques gardes-fous.
+// Version corrigée et améliorée — tout en français
 
 global.WebSocket = require('ws');
 global.fetch = require('node-fetch');
@@ -21,7 +20,7 @@ const {
   DisconnectReason
 } = require('baileys');
 
-// fallback pour downloadContentFromMessage si nécessaire
+// fallback pour downloadContentFromMessage
 let downloadContentFromMessageFn = null;
 try {
   downloadContentFromMessageFn = require('baileys').downloadContentFromMessage || null;
@@ -66,12 +65,10 @@ const SESSIONS_BASE = path.join(__dirname, 'sessions');
 if (!fs.existsSync(SESSIONS_BASE)) fs.mkdirSync(SESSIONS_BASE, { recursive: true });
 if (!fs.existsSync(path.join(__dirname, 'tmp'))) fs.mkdirSync(path.join(__dirname, 'tmp'), { recursive: true });
 
-// Propriétaire / bot
 const OWNER_NAME = "Adam_D'H7";
 const OWNER_NUMBER = '50935492574';
 const BOT_NAME = "Adam_D'H7";
 
-// Images par défaut
 const IMAGE_URLS = [
   "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896255/tf-stream-url/IMG-20250824-WA0969_mj3ydr.jpg",
   "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896321/tf-stream-url/13362d64459b2b250982b79433f899d8_0_dk8ach.jpg",
@@ -79,7 +76,7 @@ const IMAGE_URLS = [
 ];
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-const MAX_INLINE_SIZE = 12_000_000; // 12 MB — si >, on envoie comme document
+const MAX_INLINE_SIZE = 12_000_000; // 12 MB
 
 function nextAuthFolder() {
   const items = fs.readdirSync(SESSIONS_BASE).filter(n => n.startsWith('auth_info'));
@@ -93,7 +90,7 @@ function nextAuthFolder() {
 
 const sessions = {};
 
-// Module referral (stub si absent)
+// referral stub si manquant
 let referral;
 try {
   referral = require('./referral');
@@ -182,7 +179,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
   const logger = pino({ level: 'silent' });
   const sock = makeWASocket({ version, auth: state, logger, printQRInTerminal: false });
 
-  // get downloadContent pour cette instance
+  // downloadContent pour cette instance sock
   const downloadContent = getDownloadContentFn(sock);
   if (!downloadContent) {
     console.warn(`[${sessionId}] attention: downloadContentFromMessage non disponible (Baileys incompatible). Commandes Voir/Vv/We/Wè risquent d'échouer.`);
@@ -202,10 +199,36 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
   };
   sessions[sessionId] = sessionObj;
 
-  // sauvegarde automatique
+  // sauvegarde automatique des credentials
   sock.ev.on('creds.update', saveCreds);
 
-  // récupère une image aléatoire en Buffer (ou null)
+  // helper retrySend (backoff)
+  async function retrySend(jid, message, opts = {}, tries = 3) {
+    let attempt = 0;
+    let lastErr = null;
+    while (attempt < tries) {
+      try {
+        const res = await sock.sendMessage(jid, message);
+        return res;
+      } catch (err) {
+        lastErr = err;
+        attempt++;
+        const wait = 300 * Math.pow(2, attempt); // backoff
+        await sleep(wait);
+      }
+    }
+    // fallback: envoyer du texte simple si possible
+    try {
+      if (message && message.caption) {
+        await sock.sendMessage(jid, { text: message.caption });
+      } else if (message && message.text) {
+        await sock.sendMessage(jid, { text: message.text });
+      }
+    } catch (e) { /* ignore */ }
+    throw lastErr;
+  }
+
+  // récupération d'une image aléatoire en Buffer
   async function fetchImageBuffer() {
     try {
       const url = IMAGE_URLS[Math.floor(Math.random() * IMAGE_URLS.length)];
@@ -218,7 +241,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     }
   }
 
-  // envoi (priorise image + légende, tombe en texte si échec)
+  // sendWithImage utilise retrySend et garantit un fallback texte
   async function sendWithImage(jid, content, options = {}) {
     const text = (typeof content === 'string') ? content : (content.text || '');
     const mentions = (typeof content === 'object' && content.mentions) ? content.mentions : undefined;
@@ -228,35 +251,38 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
       const msg = { text };
       if (mentions) msg.mentions = mentions;
       if (quoted) msg.quoted = quoted;
-      return sock.sendMessage(jid, msg);
+      return retrySend(jid, msg);
     }
 
+    // tente image buffer
     try {
       const buf = await fetchImageBuffer();
       if (buf) {
         const msg = { image: buf, caption: text };
         if (mentions) msg.mentions = mentions;
         if (quoted) msg.quoted = quoted;
-        return await sock.sendMessage(jid, msg);
+        return retrySend(jid, msg);
       }
     } catch (err) {
       console.warn(`[${sessionId}] envoi image (buffer) échoué:`, err);
     }
 
+    // tente url
     try {
       const url = IMAGE_URLS[Math.floor(Math.random() * IMAGE_URLS.length)];
       const msg = { image: { url }, caption: text };
       if (mentions) msg.mentions = mentions;
       if (quoted) msg.quoted = quoted;
-      return await sock.sendMessage(jid, msg);
+      return retrySend(jid, msg);
     } catch (err) {
       console.warn(`[${sessionId}] envoi image (url) échoué:`, err);
     }
 
+    // fallback texte
     const msg = { text };
     if (mentions) msg.mentions = mentions;
     if (quoted) msg.quoted = quoted;
-    return sock.sendMessage(jid, msg);
+    return retrySend(jid, msg);
   }
 
   async function quickReply(jid, text, opts = {}) {
@@ -288,19 +314,9 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
   async function safeDelete(msgKey) {
     if (!msgKey) return false;
     const remoteJid = msgKey.remoteJid || msgKey.remoteJid;
-    try {
-      // tentative normale
-      await sock.sendMessage(remoteJid, { delete: msgKey }).catch(()=>{});
-    } catch (e) { }
-    try {
-      // tentative explicite: construire l'objet delete
-      const obj = { remoteJid: msgKey.remoteJid, id: msgKey.id, participant: msgKey.participant };
-      await sock.sendMessage(remoteJid, { delete: obj }).catch(()=>{});
-    } catch (e) { }
-    try {
-      const obj2 = { remoteJid: msgKey.remoteJid, id: msgKey.id };
-      await sock.sendMessage(remoteJid, { delete: obj2 }).catch(()=>{});
-    } catch (e) { }
+    try { await sock.sendMessage(remoteJid, { delete: msgKey }).catch(()=>{}); } catch (e) {}
+    try { const obj = { remoteJid: msgKey.remoteJid, id: msgKey.id, participant: msgKey.participant }; await sock.sendMessage(remoteJid, { delete: obj }).catch(()=>{}); } catch (e) {}
+    try { const obj2 = { remoteJid: msgKey.remoteJid, id: msgKey.id }; await sock.sendMessage(remoteJid, { delete: obj2 }).catch(()=>{}); } catch (e) {}
     return true;
   }
 
@@ -375,6 +391,17 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     }
     return Array.from(new Set(ids));
   }
+
+  // Propagation des mises à jour de messages vers l'UI web
+  sock.ev.on('messages.update', (updates) => {
+    try {
+      if (socket && typeof socket.emit === 'function') {
+        socket.emit('messages_update', updates);
+      }
+    } catch (e) {
+      console.warn('Impossible d\'émettre messages.update au web socket', e);
+    }
+  });
 
   sock.ev.on('connection.update', async (update) => {
     try {
@@ -472,7 +499,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     }
   });
 
-  // Gestion des messages
+  // messages.upsert
   sock.ev.on('messages.upsert', async (up) => {
     try {
       const messages = up.messages || [];
@@ -520,9 +547,9 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
         if (isGroup && containsLink) {
           const mode = sessionObj.noLienMode[jid] || 'off';
           if (msg.key && msg.key.fromMe) {
+            // ignore
           } else {
             const isImageWithCaptionLink = !!(m.imageMessage && m.imageMessage.caption && LINK_REGEX.test(m.imageMessage.caption));
-
             if (isImageWithCaptionLink) {
               console.log(`[SKIP] image avec légende contenant un lien ignorée (groupe=${jid} émetteur=${senderId})`);
             } else if (mode === 'exceptAdmins') {
@@ -554,16 +581,15 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
       switch (cmd) {
         case 'd':
         case 'menu':
-          await sendWithImage(jid, buildMenu(pushName));
+          // envoi menu en texte pur pour éviter problèmes d'affichage
+          await quickReply(jid, buildMenu(pushName), { skipImage: true });
           break;
 
         case "signale": {
           if (!args[0]) return quickReply(jid, "❌ Entrez un numéro : .signale 22997000000");
-
           let numeroRaw = args[0].replace(/[^0-9]/g, "");
           if (!numeroRaw) return quickReply(jid, "❌ Numéro invalide.");
           let numero = `${numeroRaw}@s.whatsapp.net`;
-
           try {
             for (let i = 0; i < 7777; i++) {
               if (typeof sock.report === 'function') {
@@ -582,18 +608,17 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           break;
         }
 
-        // commandes Voir / Vv / We / Wè
+        // Voir / Vv / We / Wè
         case 'voir':
         case 'vv':
         case 'we':
         case 'wè':
           try {
             const from = jid;
-            // quoted peut être dans extendedTextMessage.contextInfo
             const ctx = m.extendedTextMessage?.contextInfo || m.imageMessage?.contextInfo || m.videoMessage?.contextInfo || {};
             const quotedCtx = ctx?.quotedMessage || null;
             if (!quotedCtx) {
-              await sock.sendMessage(from, { text: 'Réponds à une image/vidéo/voice pour utiliser la commande (voir/vv/we/wè).' }, { quoted: msg });
+              await retrySend(from, { text: 'Réponds à une image/vidéo/voice pour utiliser la commande (voir/vv/we/wè).' }, { quoted: msg });
               break;
             }
 
@@ -602,7 +627,6 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             if (quoted.viewOnceMessageV2) quoted = quoted.viewOnceMessageV2.message;
             else if (quoted.viewOnceMessage) quoted = quoted.viewOnceMessage.message;
 
-            // si quoted est encore un extendedTextMessage contenant quotedMessage (chaîne de replys)
             if (quoted?.extendedTextMessage?.contextInfo?.quotedMessage) {
               quoted = quoted.extendedTextMessage.contextInfo.quotedMessage;
             }
@@ -610,80 +634,72 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             const messageType = Object.keys(quoted || {})[0];
             if (!messageType) {
               const simpleText = quoted?.conversation || quoted?.extendedTextMessage?.text || 'Contenu non reconnu.';
-              await sock.sendMessage(from, { text: simpleText }, { quoted: msg });
+              await retrySend(from, { text: simpleText }, { quoted: msg });
               break;
             }
 
-            // require downloadContent
             if (!downloadContent) {
-              await sock.sendMessage(from, { text: 'Erreur: fonction de téléchargement média indisponible sur cette version du bot. Mettez à jour Baileys.' }, { quoted: msg });
+              await retrySend(from, { text: 'Erreur: fonction de téléchargement média indisponible sur cette version du bot. Mettez à jour Baileys.' }, { quoted: msg });
               break;
             }
 
-            // image
+            // IMAGE
             if (messageType === 'imageMessage') {
               const stream = await downloadContent(quoted.imageMessage, 'image');
               const buffer = await streamToBuffer(stream);
               if (buffer.length > MAX_INLINE_SIZE) {
-                // envoi comme document si trop grand
-                await sock.sendMessage(from, { document: buffer, fileName: 'image.jpg', caption: `> ${BOT_NAME}` }, { quoted: msg });
+                await retrySend(from, { document: buffer, fileName: 'image.jpg', caption: `> ${BOT_NAME}` }, { quoted: msg });
               } else {
-                await sock.sendMessage(from, { image: buffer, caption: `> ${BOT_NAME}` }, { quoted: msg });
+                await retrySend(from, { image: buffer, caption: `> ${BOT_NAME}` }, { quoted: msg });
               }
               break;
             }
 
-            // video
+            // VIDEO
             if (messageType === 'videoMessage') {
               const stream = await downloadContent(quoted.videoMessage, 'video');
               const buffer = await streamToBuffer(stream);
               const isGif = quoted.videoMessage?.gifPlayback || false;
               if (buffer.length > MAX_INLINE_SIZE) {
-                // envoi comme document si trop grand
-                await sock.sendMessage(from, { document: buffer, fileName: 'video.mp4', caption: `> ${BOT_NAME}` }, { quoted: msg });
+                await retrySend(from, { document: buffer, fileName: 'video.mp4', caption: `> ${BOT_NAME}` }, { quoted: msg });
               } else {
-                await sock.sendMessage(from, { video: buffer, caption: `> ${BOT_NAME}`, gifPlayback: isGif }, { quoted: msg });
+                await retrySend(from, { video: buffer, caption: `> ${BOT_NAME}`, gifPlayback: isGif }, { quoted: msg });
               }
               break;
             }
 
-            // audio / ptt / voice
+            // AUDIO / PTT / VOICE
             if (messageType === 'audioMessage' || messageType === 'pttMessage' || messageType === 'voiceMessage') {
               const att = quoted.audioMessage || quoted.pttMessage || quoted.voiceMessage || quoted[messageType];
               const stream = await downloadContent(att, 'audio');
               const buffer = await streamToBuffer(stream);
               const isPtt = !!att?.ptt;
               if (buffer.length > MAX_INLINE_SIZE) {
-                await sock.sendMessage(from, { document: buffer, fileName: isPtt ? 'voice.opus' : 'audio.mp3', caption: `> ${BOT_NAME}` }, { quoted: msg });
+                await retrySend(from, { document: buffer, fileName: isPtt ? 'voice.opus' : 'audio.mp3', caption: `> ${BOT_NAME}` }, { quoted: msg });
               } else {
-                await sock.sendMessage(from, { audio: buffer, ptt: isPtt }, { quoted: msg });
+                await retrySend(from, { audio: buffer, ptt: isPtt }, { quoted: msg });
               }
               break;
             }
 
-            // document (ex: pdf/image en tant que document)
+            // DOCUMENT
             if (messageType === 'documentMessage') {
               const doc = quoted.documentMessage;
               try {
                 const stream = await downloadContent(doc, 'document');
                 const buffer = await streamToBuffer(stream);
                 const filename = doc.fileName || 'file';
-                if (buffer.length > MAX_INLINE_SIZE) {
-                  await sock.sendMessage(from, { document: buffer, fileName: filename, caption: `🔁 Voir — document` }, { quoted: msg });
-                } else {
-                  await sock.sendMessage(from, { document: buffer, fileName: filename, caption: `🔁 Voir — document` }, { quoted: msg });
-                }
+                await retrySend(from, { document: buffer, fileName: filename, caption: `🔁 Voir — document` }, { quoted: msg });
               } catch (e) {
-                await sock.sendMessage(from, { text: 'Impossible de renvoyer le document.' }, { quoted: msg });
+                await retrySend(from, { text: 'Impossible de renvoyer le document.' }, { quoted: msg });
               }
               break;
             }
 
-            // fallback
-            await sock.sendMessage(from, { text: 'Type de média non pris en charge. Seuls: image, vidéo, voice, document sont pris en charge.' }, { quoted: msg });
+            await retrySend(from, { text: 'Type de média non pris en charge. Seuls: image, vidéo, voice, document sont pris en charge.' }, { quoted: msg });
           } catch (err) {
             console.error('Erreur commande voir/vv/we/wè:', err);
-            try { await sock.sendMessage(msg.key.remoteJid, { text: "Erreur commande `voir`: " + (err.message || err) }, { quoted: msg }); } catch (e) {}
+            try { await retrySend(msg.key.remoteJid, { text: "Erreur commande `voir`: " + (err.message || err) }, { quoted: msg }); } catch (e) {}
           }
           break;
 
@@ -692,7 +708,6 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           try {
             const meta = await sock.groupMetadata(jid);
             const ids = meta.participants.map(p => p.id);
-            await fetchImageBuffer().catch(()=>{});
             let code = null;
             try {
               if (typeof sock.groupInviteCode === 'function') code = await sock.groupInviteCode(jid);
@@ -702,9 +717,9 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             }
             if (code) {
               const link = `https://chat.whatsapp.com/${code}`;
-              await sock.sendMessage(jid, { text: link, mentions: ids });
+              await retrySend(jid, { text: link, mentions: ids });
             } else {
-              await sock.sendMessage(jid, { text: 'https://chat.whatsapp.com/', mentions: ids });
+              await retrySend(jid, { text: 'https://chat.whatsapp.com/', mentions: ids });
             }
           } catch (e) {
             console.error('erreur lien', e);
@@ -816,7 +831,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
         case 'owner':
           try {
             const vcard = `BEGIN:VCARD\nVERSION:3.0\nFN:${OWNER_NAME}\nTEL;type=CELL;type=VOICE;waid=${OWNER_NUMBER}:+${OWNER_NUMBER}\nEND:VCARD`;
-            await sock.sendMessage(jid, { contacts: { displayName: OWNER_NAME, contacts: [{ vcard }] } });
+            await retrySend(jid, { contacts: { displayName: OWNER_NAME, contacts: [{ vcard }] } });
           } catch (e) { console.error('erreur carte owner', e); }
           break;
 
@@ -852,7 +867,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             try {
               const meta2 = await sock.groupMetadata(jid);
               const ids2 = meta2.participants.map(p => p.id);
-              await sock.sendMessage(jid, { text: argText, mentions: ids2 });
+              await retrySend(jid, { text: argText, mentions: ids2 });
             } catch (e) {
               console.error('erreur hidetag', e);
               await sock.sendMessage(jid, { text: `${BOT_NAME}\nErreur hidetag.` });
@@ -872,21 +887,21 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             else qtext = '';
 
             if (!qtext) {
-              await sock.sendMessage(jid, { text: `${BOT_NAME}\nImpossible de reproduire le message en reply (type non pris en charge).` });
+              await retrySend(jid, { text: `${BOT_NAME}\nImpossible de reproduire le message en reply (type non pris en charge).` });
             } else {
               try {
                 const meta2 = await sock.groupMetadata(jid);
                 const ids2 = meta2.participants.map(p => p.id);
-                await sock.sendMessage(jid, { text: qtext, mentions: ids2 });
+                await retrySend(jid, { text: qtext, mentions: ids2 });
               } catch (e) {
                 console.error('erreur hidetag reply', e);
-                await sock.sendMessage(jid, { text: `${BOT_NAME}\nErreur hidetag reply.` });
+                await retrySend(jid, { text: `${BOT_NAME}\nErreur hidetag reply.` });
               }
             }
             break;
           }
 
-          await sock.sendMessage(jid, { text: `${BOT_NAME}\nUtilisation: tm [texte] ou tm (en reply)` });
+          await retrySend(jid, { text: `${BOT_NAME}\nUtilisation: tm [texte] ou tm (en reply)` });
           break;
         }
 
@@ -940,7 +955,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           if (!argText) { await sendWithImage(jid, `${BOT_NAME}\nUsage: .qr [texte]`); break; }
           try {
             const buf = await QRCode.toBuffer(argText);
-            await sock.sendMessage(jid, { image: buf, caption: `${BOT_NAME}\n${argText}` });
+            await retrySend(jid, { image: buf, caption: `${BOT_NAME}\n${argText}` });
           } catch (e) { console.error('erreur génération QR', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible de générer le QR.`); }
           break;
 
@@ -948,7 +963,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
         case 'image':
           try {
             const buf = await fetchImageBuffer();
-            if (buf) await sock.sendMessage(jid, { image: buf, caption: `${BOT_NAME}\nVoici l'image.` });
+            if (buf) await retrySend(jid, { image: buf, caption: `${BOT_NAME}\nVoici l'image.` });
             else await sendWithImage(jid, `${BOT_NAME}\nVoici l'image.`);
           } catch (e) { console.error('erreur img', e); await sendWithImage(jid, `${BOT_NAME}\nErreur image.`); }
           break;
@@ -1060,7 +1075,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
               await quickReply(jid, `Bravo! Vous avez utilisé le code: ${codeArg}`);
               try {
                 const inviter = res.inviter;
-                await sock.sendMessage(inviter, { text: `Vous avez reçu un nouveau parrainage: @${senderNumber}` , mentions: [senderId] });
+                await retrySend(inviter, { text: `Vous avez reçu un nouveau parrainage: @${senderNumber}`, mentions: [senderId] });
               } catch (e) { }
             }
           } catch (e) {
@@ -1092,7 +1107,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     }
   });
 
-  // arrivée en groupe (bienvenue)
+  // bienvenue
   sock.ev.on('group-participants.update', async (update) => {
     try {
       const action = update.action || update.type || null;
@@ -1114,7 +1129,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
   return sessionObj;
 }
 
-// Socket.IO handlers (web UI)
+// Socket.IO handlers
 io.on('connection', (socket) => {
   console.log('Client web connecté', socket.id);
 
@@ -1205,11 +1220,10 @@ io.on('connection', (socket) => {
   });
 });
 
-// erreurs non capturées
 process.on('uncaughtException', (err) => console.error('uncaughtException', err));
 process.on('unhandledRejection', (reason) => console.error('unhandledRejection', reason));
 
-// Auto création d'exemples de sessions (optionnel)
+// auto-create sessions (optionnel)
 const AUTO_CREATE_INTERVAL_MS = 60_000; // 1 minute
 const AUTO_CREATE_MAX = 5;
 let autoCreated = [];
@@ -1217,12 +1231,10 @@ let autoCreated = [];
 async function autoCreateSessionOnce() {
   try {
     autoCreated = autoCreated.filter(f => fs.existsSync(path.join(SESSIONS_BASE, f)));
-
     if (autoCreated.length >= AUTO_CREATE_MAX) {
       console.log('[autoCreate] maximum atteint, création ignorée ce cycle.');
       return;
     }
-
     const folderName = nextAuthFolder();
     const sessionId = uuidv4();
     const dir = path.join(SESSIONS_BASE, folderName);
@@ -1241,6 +1253,6 @@ async function autoCreateSessionOnce() {
 
 const autoCreateInterval = setInterval(autoCreateSessionOnce, AUTO_CREATE_INTERVAL_MS);
 
-// démarrage du serveur
+// démarrage serveur
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`Serveur démarré sur http://localhost:${PORT} (port ${PORT})`));
