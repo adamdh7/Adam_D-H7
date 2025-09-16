@@ -1,4 +1,7 @@
 // server.js
+// Version améliorée : corrections, gestion des gros médias pour la commande "voir",
+// suppression robuste, messages en français, et quelques gardes-fous.
+
 global.WebSocket = require('ws');
 global.fetch = require('node-fetch');
 
@@ -18,8 +21,7 @@ const {
   DisconnectReason
 } = require('baileys');
 
-// --- Ajout : fallback robuste pour downloadContentFromMessage et helper stream->Buffer ---
-// Pa retire sa; li pa chanje anyen nan kòd ki egziste deja, li siplemantè pou commandes medya.
+// fallback pour downloadContentFromMessage si nécessaire
 let downloadContentFromMessageFn = null;
 try {
   downloadContentFromMessageFn = require('baileys').downloadContentFromMessage || null;
@@ -37,14 +39,61 @@ function getDownloadContentFn(sock) {
   return null;
 }
 
-// helper: stream -> Buffer (global helper)
+// helper: stream -> Buffer
 async function streamToBuffer(stream) {
   const chunks = [];
   for await (const c of stream) chunks.push(c);
   return Buffer.concat(chunks);
 }
-// --- Fen ajout ---
 
+const app = express();
+const server = http.createServer(app);
+
+global.mode = global.mode || 'public';
+
+// Origine autorisée (modifie si besoin)
+const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://adam-d-h7-q8qo.onrender.com';
+const io = new Server(server, {
+  cors: { origin: [ALLOWED_ORIGIN], methods: ['GET','POST'] },
+  pingInterval: 25000,
+  pingTimeout: 120000
+});
+
+app.use(express.static(path.join(__dirname, 'public')));
+app.get('/health', (req, res) => res.status(200).send("Serveur OK"));
+
+const SESSIONS_BASE = path.join(__dirname, 'sessions');
+if (!fs.existsSync(SESSIONS_BASE)) fs.mkdirSync(SESSIONS_BASE, { recursive: true });
+if (!fs.existsSync(path.join(__dirname, 'tmp'))) fs.mkdirSync(path.join(__dirname, 'tmp'), { recursive: true });
+
+// Propriétaire / bot
+const OWNER_NAME = "Adam_D'H7";
+const OWNER_NUMBER = '50935492574';
+const BOT_NAME = "Adam_D'H7";
+
+// Images par défaut
+const IMAGE_URLS = [
+  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896255/tf-stream-url/IMG-20250824-WA0969_mj3ydr.jpg",
+  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896321/tf-stream-url/13362d64459b2b250982b79433f899d8_0_dk8ach.jpg",
+  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757902902/tf-stream-url/IMG-20250831-WA0167_nrhik0.jpg"
+];
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const MAX_INLINE_SIZE = 12_000_000; // 12 MB — si >, on envoie comme document
+
+function nextAuthFolder() {
+  const items = fs.readdirSync(SESSIONS_BASE).filter(n => n.startsWith('auth_info'));
+  const nums = items.map(n => {
+    const m = n.match(/auth_info(\d+)/);
+    return m ? parseInt(m[1], 10) : 0;
+  });
+  const next = (nums.length ? Math.max(...nums) : 0) + 1;
+  return `auth_info${next}`;
+}
+
+const sessions = {};
+
+// Module referral (stub si absent)
 let referral;
 try {
   referral = require('./referral');
@@ -58,51 +107,6 @@ try {
     getStats: async () => null
   };
 }
-
-const app = express();
-const server = http.createServer(app);
-
-global.mode = global.mode || 'public';
-
-// Origine autorisée pour CORS (modifier si nécessaire)
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://adam-d-h7-q8qo.onrender.com';
-const io = new Server(server, {
-  cors: { origin: [ALLOWED_ORIGIN], methods: ['GET','POST'] },
-  pingInterval: 25000,
-  pingTimeout: 120000
-});
-
-app.use(express.static(path.join(__dirname, 'public')));
-app.get('/health', (req, res) => res.status(200).send("Serveur OK"));
-
-const SESSIONS_BASE = path.join(__dirname, 'sessions');
-if (!fs.existsSync(SESSIONS_BASE)) fs.mkdirSync(SESSIONS_BASE, { recursive: true });
-
-// Nom et numéro du propriétaire / bot
-const OWNER_NAME = "Adam_D'H7";
-const OWNER_NUMBER = '50935492574';
-const BOT_NAME = "Adam_D'H7";
-
-// --- REMPLACÉ : nouvelles URLs (anciens liens effacés) ---
-const IMAGE_URLS = [
-  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896255/tf-stream-url/IMG-20250824-WA0969_mj3ydr.jpg",
-  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757896321/tf-stream-url/13362d64459b2b250982b79433f899d8_0_dk8ach.jpg",
-  "https://res.cloudinary.com/dckwrqrur/image/upload/v1757902902/tf-stream-url/IMG-20250831-WA0167_nrhik0.jpg"
-];
-
-const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-
-function nextAuthFolder() {
-  const items = fs.readdirSync(SESSIONS_BASE).filter(n => n.startsWith('auth_info'));
-  const nums = items.map(n => {
-    const m = n.match(/auth_info(\d+)/);
-    return m ? parseInt(m[1], 10) : 0;
-  });
-  const next = (nums.length ? Math.max(...nums) : 0) + 1;
-  return `auth_info${next}`;
-}
-
-const sessions = {};
 
 referral.init()
   .then(() => console.log('service de parrainage prêt'))
@@ -178,12 +182,11 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
   const logger = pino({ level: 'silent' });
   const sock = makeWASocket({ version, auth: state, logger, printQRInTerminal: false });
 
-  // --- Ajout : get downloadContent fn pour cette instance sock ---
+  // get downloadContent pour cette instance
   const downloadContent = getDownloadContentFn(sock);
   if (!downloadContent) {
-    console.warn(`[${sessionId}] attention: downloadContentFromMessage non disponible (Baileys incompatible). Commandes Voir/Vv/We/Wè riske echwe.`);
+    console.warn(`[${sessionId}] attention: downloadContentFromMessage non disponible (Baileys incompatible). Commandes Voir/Vv/We/Wè risquent d'échouer.`);
   }
-  // --- fen ajout ---
 
   const sessionObj = {
     sock,
@@ -199,10 +202,10 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
   };
   sessions[sessionId] = sessionObj;
 
-  // Sauvegarde automatique des credentials
+  // sauvegarde automatique
   sock.ev.on('creds.update', saveCreds);
 
-  // Récupère une image aléatoire en Buffer (ou null si erreur)
+  // récupère une image aléatoire en Buffer (ou null)
   async function fetchImageBuffer() {
     try {
       const url = IMAGE_URLS[Math.floor(Math.random() * IMAGE_URLS.length)];
@@ -215,7 +218,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     }
   }
 
-  // Envoi de message (priorise image + légende, tombe en texte si échec)
+  // envoi (priorise image + légende, tombe en texte si échec)
   async function sendWithImage(jid, content, options = {}) {
     const text = (typeof content === 'string') ? content : (content.text || '');
     const mentions = (typeof content === 'object' && content.mentions) ? content.mentions : undefined;
@@ -281,113 +284,27 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     }
   }
 
-  sock.ev.on('connection.update', async (update) => {
+  // suppression robuste
+  async function safeDelete(msgKey) {
+    if (!msgKey) return false;
+    const remoteJid = msgKey.remoteJid || msgKey.remoteJid;
     try {
-      const { connection, qr, lastDisconnect } = update;
-      if (qr) {
-        try {
-          const dataUrl = await QRCode.toDataURL(qr);
-          if (socket && typeof socket.emit === 'function') socket.emit('qr', { sessionId, qrDataUrl: dataUrl, qrString: qr });
-        } catch (e) {
-          if (socket && typeof socket.emit === 'function') socket.emit('qr', { sessionId, qrString: qr });
-        }
-      }
+      // tentative normale
+      await sock.sendMessage(remoteJid, { delete: msgKey }).catch(()=>{});
+    } catch (e) { }
+    try {
+      // tentative explicite: construire l'objet delete
+      const obj = { remoteJid: msgKey.remoteJid, id: msgKey.id, participant: msgKey.participant };
+      await sock.sendMessage(remoteJid, { delete: obj }).catch(()=>{});
+    } catch (e) { }
+    try {
+      const obj2 = { remoteJid: msgKey.remoteJid, id: msgKey.id };
+      await sock.sendMessage(remoteJid, { delete: obj2 }).catch(()=>{});
+    } catch (e) { }
+    return true;
+  }
 
-      if (connection === 'open') {
-        try {
-          if (sock.user && (sock.user.id || sock.user.jid)) {
-            sessionObj.botId = (sock.user.id || sock.user.jid);
-          } else if (sock.user) {
-            sessionObj.botId = sock.user;
-          }
-        } catch (e) { }
-
-        try {
-          const me = sock.user?.id || sock.user?.jid || (sock.user && sock.user[0] && sock.user[0].id);
-          if (me) {
-            const ownerNum = (typeof me === 'string' && me.includes('@')) ? me.split('@')[0] : String(me);
-            sessionObj.sessionOwnerNumber = ownerNum.replace(/\D/g, '');
-            console.log(`[${sessionId}] sessionOwnerNumber détecté automatiquement: ${sessionObj.sessionOwnerNumber}`);
-          }
-        } catch (e) {
-          console.warn(`[${sessionId}] impossible de détecter le propriétaire de session automatiquement`, e);
-        }
-
-        console.log(`[${sessionId}] Connecté (dossier=${folderName})`);
-        if (socket && typeof socket.emit === 'function') socket.emit('connected', { sessionId, folderName });
-        try { fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify({ connectedAt: Date.now(), phone: sessionObj.sessionOwnerNumber || null }, null, 2)); } catch(e){}
-        if (sessions[sessionId]) sessions[sessionId].restarting = false;
-
-        try {
-          const ownerNumber = sessionObj.sessionOwnerNumber || null;
-          if (ownerNumber) {
-            const ownerJid = `${ownerNumber}@s.whatsapp.net`;
-            await referral.getOrCreateUser(ownerJid, { name: folderName });
-            const code = await referral.generateCodeFor(ownerJid, folderName || OWNER_NAME);
-            if (socket && typeof socket.emit === 'function') socket.emit('referral_code', { sessionId, folderName, code, ownerNumber });
-          } else {
-            try {
-              const metaPath = path.join(dir, 'meta.json');
-              if (fs.existsSync(metaPath)) {
-                const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-                if (meta && meta.tempReferral && meta.tempReferral.code) {
-                  if (socket && typeof socket.emit === 'function') socket.emit('referral_code', { sessionId, folderName, code: meta.tempReferral.code, ownerNumber: null });
-                }
-              }
-            } catch (e) {}
-          }
-        } catch (e) {
-          console.warn(`[${sessionId}] échec génération code de parrainage`, e);
-        }
-      }
-
-      if (connection === 'close') {
-        const code = (lastDisconnect?.error || {}).output?.statusCode || null;
-        console.log(`[${sessionId}] Connexion fermée, code=${code}`);
-        if (socket && typeof socket.emit === 'function') socket.emit('disconnected', { sessionId, reason: code });
-
-        if (code === DisconnectReason.loggedOut) {
-          try { sock.end(); } catch(e){}
-          delete sessions[sessionId];
-          return;
-        }
-
-        if (code === DisconnectReason.restartRequired || code === 515) {
-          console.log(`[${sessionId}] redémarrage requis (code ${code}). Tentative de réinitialisation.`);
-          if (sessions[sessionId]) sessions[sessionId].restarting = true;
-          try { sock.end(); } catch(e){}
-          delete sessions[sessionId];
-
-          const attempt = (opts && opts.attempt) ? opts.attempt : 0;
-          const delay = Math.min(30000, 2000 + attempt * 2000);
-          setTimeout(() => {
-            startBaileysForSession(sessionId, folderName, socket, { attempt: attempt + 1 })
-              .then(() => { if (socket && typeof socket.emit === 'function') socket.emit('restarted', { sessionId, folderName }); })
-              .catch(err => {
-                console.error(`[${sessionId}] échec du redémarrage`, err);
-                if (socket && typeof socket.emit === 'function') socket.emit('error', { message: "Le redémarrage a échoué", detail: String(err) });
-              });
-          }, delay);
-          return;
-        }
-
-        try { sock.end(); } catch(e){}
-        delete sessions[sessionId];
-        setTimeout(() => {
-          startBaileysForSession(sessionId, folderName, socket, { attempt: 0 })
-            .then(() => { if (socket && typeof socket.emit === 'function') socket.emit('reconnected', { sessionId, folderName }); })
-            .catch(err => {
-              console.error(`[${sessionId}] échec de reconnexion`, err);
-              if (socket && typeof socket.emit === 'function') socket.emit('error', { message: "La reconnexion a échoué", detail: String(err) });
-            });
-        }, 5000);
-      }
-    } catch (err) {
-      console.error('erreur dans le gestionnaire connection.update', err);
-    }
-  });
-
-  // Construit le menu envoyé aux utilisateurs (tout en français)
+  // menu en français
   function buildMenu(pushName = 'Utilisateur') {
     return `*○ Menu*\n\n` +
 `  *${BOT_NAME}*\n` +
@@ -459,6 +376,103 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     return Array.from(new Set(ids));
   }
 
+  sock.ev.on('connection.update', async (update) => {
+    try {
+      const { connection, qr, lastDisconnect } = update;
+      if (qr) {
+        try {
+          const dataUrl = await QRCode.toDataURL(qr);
+          if (socket && typeof socket.emit === 'function') socket.emit('qr', { sessionId, qrDataUrl: dataUrl, qrString: qr });
+        } catch (e) {
+          if (socket && typeof socket.emit === 'function') socket.emit('qr', { sessionId, qrString: qr });
+        }
+      }
+
+      if (connection === 'open') {
+        try {
+          if (sock.user && (sock.user.id || sock.user.jid)) {
+            sessionObj.botId = (sock.user.id || sock.user.jid);
+          } else if (sock.user) {
+            sessionObj.botId = sock.user;
+          }
+        } catch (e) { }
+
+        try {
+          const me = sock.user?.id || sock.user?.jid || (sock.user && sock.user[0] && sock.user[0].id);
+          if (me) {
+            const ownerNum = (typeof me === 'string' && me.includes('@')) ? me.split('@')[0] : String(me);
+            sessionObj.sessionOwnerNumber = ownerNum.replace(/\D/g, '');
+            console.log(`[${sessionId}] sessionOwnerNumber détecté automatiquement: ${sessionObj.sessionOwnerNumber}`);
+          }
+        } catch (e) {
+          console.warn(`[${sessionId}] impossible de détecter le propriétaire de session automatiquement`, e);
+        }
+
+        console.log(`[${sessionId}] Connecté (dossier=${folderName})`);
+        if (socket && typeof socket.emit === 'function') socket.emit('connected', { sessionId, folderName });
+        try { fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify({ connectedAt: Date.now(), phone: sessionObj.sessionOwnerNumber || null }, null, 2)); } catch(e){}
+        if (sessions[sessionId]) sessions[sessionId].restarting = false;
+
+        try {
+          const ownerNumber = sessionObj.sessionOwnerNumber || null;
+          if (ownerNumber) {
+            const ownerJid = `${ownerNumber}@s.whatsapp.net`;
+            await referral.getOrCreateUser(ownerJid, { name: folderName });
+            const code = await referral.generateCodeFor(ownerJid, folderName || OWNER_NAME);
+            if (socket && typeof socket.emit === 'function') socket.emit('referral_code', { sessionId, folderName, code, ownerNumber });
+          }
+        } catch (e) {
+          console.warn(`[${sessionId}] échec génération code de parrainage`, e);
+        }
+      }
+
+      if (connection === 'close') {
+        const code = (lastDisconnect?.error || {}).output?.statusCode || null;
+        console.log(`[${sessionId}] Connexion fermée, code=${code}`);
+        if (socket && typeof socket.emit === 'function') socket.emit('disconnected', { sessionId, reason: code });
+
+        if (code === DisconnectReason.loggedOut) {
+          try { sock.end(); } catch(e){}
+          delete sessions[sessionId];
+          return;
+        }
+
+        if (code === DisconnectReason.restartRequired || code === 515) {
+          console.log(`[${sessionId}] redémarrage requis (code ${code}). Tentative de réinitialisation.`);
+          if (sessions[sessionId]) sessions[sessionId].restarting = true;
+          try { sock.end(); } catch(e){}
+          delete sessions[sessionId];
+
+          const attempt = (opts && opts.attempt) ? opts.attempt : 0;
+          const delay = Math.min(30000, 2000 + attempt * 2000);
+          setTimeout(() => {
+            startBaileysForSession(sessionId, folderName, socket, { attempt: attempt + 1 })
+              .then(() => { if (socket && typeof socket.emit === 'function') socket.emit('restarted', { sessionId, folderName }); })
+              .catch(err => {
+                console.error(`[${sessionId}] échec du redémarrage`, err);
+                if (socket && typeof socket.emit === 'function') socket.emit('error', { message: "Le redémarrage a échoué", detail: String(err) });
+              });
+          }, delay);
+          return;
+        }
+
+        try { sock.end(); } catch(e){}
+        delete sessions[sessionId];
+        setTimeout(() => {
+          startBaileysForSession(sessionId, folderName, socket, { attempt: 0 })
+            .then(() => { if (socket && typeof socket.emit === 'function') socket.emit('reconnected', { sessionId, folderName }); })
+            .catch(err => {
+              console.error(`[${sessionId}] échec de reconnexion`, err);
+              if (socket && typeof socket.emit === 'function') socket.emit('error', { message: "La reconnexion a échoué", detail: String(err) });
+            });
+        }, 5000);
+      }
+    } catch (err) {
+      console.error('erreur dans le gestionnaire connection.update', err);
+    }
+  });
+
+  // Gestion des messages
   sock.ev.on('messages.upsert', async (up) => {
     try {
       const messages = up.messages || [];
@@ -514,14 +528,14 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             } else if (mode === 'exceptAdmins') {
               if (!isAdmin && !isOwner) {
                 try {
-                  await sock.sendMessage(jid, { delete: msg.key });
+                  await safeDelete(msg.key);
                   console.log(`[SUPPR] nolien: groupe=${jid} émetteur=${senderId} extrait="${(textRaw||'').slice(0,120)}"`);
                 } catch (e) { console.warn(`[ERREUR_SUPPR] suppression nolien échouée groupe=${jid} émetteur=${senderId}`, e); }
                 return;
               }
             } else if (mode === 'all') {
               try {
-                await sock.sendMessage(jid, { delete: msg.key });
+                await safeDelete(msg.key);
                 console.log(`[SUPPR] nolien2: groupe=${jid} émetteur=${senderId} extrait="${(textRaw||'').slice(0,120)}"`);
               } catch (e) { console.warn(`[ERREUR_SUPPR] suppression nolien2 échouée groupe=${jid} émetteur=${senderId}`, e); }
               return;
@@ -568,18 +582,16 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           break;
         }
 
-        // ---------------------------------------------------------------------
-        // --- AJOUT : commandes Voir, Vv, We, Wè (toutes font la même chose) ---
-        // Usage: répondre à un message contenant image/video/voice (incl. view-once)
-        // ---------------------------------------------------------------------
+        // commandes Voir / Vv / We / Wè
         case 'voir':
         case 'vv':
         case 'we':
         case 'wè':
           try {
             const from = jid;
-            // quoted peut se trouver dans extendedTextMessage.contextInfo
-            const quotedCtx = m.extendedTextMessage?.contextInfo?.quotedMessage || m.imageMessage?.contextInfo?.quotedMessage || m.videoMessage?.contextInfo?.quotedMessage || null;
+            // quoted peut être dans extendedTextMessage.contextInfo
+            const ctx = m.extendedTextMessage?.contextInfo || m.imageMessage?.contextInfo || m.videoMessage?.contextInfo || {};
+            const quotedCtx = ctx?.quotedMessage || null;
             if (!quotedCtx) {
               await sock.sendMessage(from, { text: 'Réponds à une image/vidéo/voice pour utiliser la commande (voir/vv/we/wè).' }, { quoted: msg });
               break;
@@ -612,7 +624,12 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             if (messageType === 'imageMessage') {
               const stream = await downloadContent(quoted.imageMessage, 'image');
               const buffer = await streamToBuffer(stream);
-              await sock.sendMessage(from, { image: buffer, caption: '> Adam_DH7' }, { quoted: msg });
+              if (buffer.length > MAX_INLINE_SIZE) {
+                // envoi comme document si trop grand
+                await sock.sendMessage(from, { document: buffer, fileName: 'image.jpg', caption: `> ${BOT_NAME}` }, { quoted: msg });
+              } else {
+                await sock.sendMessage(from, { image: buffer, caption: `> ${BOT_NAME}` }, { quoted: msg });
+              }
               break;
             }
 
@@ -620,8 +637,13 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             if (messageType === 'videoMessage') {
               const stream = await downloadContent(quoted.videoMessage, 'video');
               const buffer = await streamToBuffer(stream);
-              const isGif = quoted.videoMessage?.gifPlayback || false;Voir
-              await sock.sendMessage(from, { video: buffer, caption: '> Adam_DH7', gifPlayback: isGif }, { quoted: msg });
+              const isGif = quoted.videoMessage?.gifPlayback || false;
+              if (buffer.length > MAX_INLINE_SIZE) {
+                // envoi comme document si trop grand
+                await sock.sendMessage(from, { document: buffer, fileName: 'video.mp4', caption: `> ${BOT_NAME}` }, { quoted: msg });
+              } else {
+                await sock.sendMessage(from, { video: buffer, caption: `> ${BOT_NAME}`, gifPlayback: isGif }, { quoted: msg });
+              }
               break;
             }
 
@@ -631,35 +653,39 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
               const stream = await downloadContent(att, 'audio');
               const buffer = await streamToBuffer(stream);
               const isPtt = !!att?.ptt;
-              await sock.sendMessage(from, { audio: buffer, ptt: isPtt }, { quoted: msg });
+              if (buffer.length > MAX_INLINE_SIZE) {
+                await sock.sendMessage(from, { document: buffer, fileName: isPtt ? 'voice.opus' : 'audio.mp3', caption: `> ${BOT_NAME}` }, { quoted: msg });
+              } else {
+                await sock.sendMessage(from, { audio: buffer, ptt: isPtt }, { quoted: msg });
+              }
               break;
             }
 
-            // document (ex: pdf/image as document)
+            // document (ex: pdf/image en tant que document)
             if (messageType === 'documentMessage') {
-              // attempt download as document (type "document")
               const doc = quoted.documentMessage;
               try {
                 const stream = await downloadContent(doc, 'document');
                 const buffer = await streamToBuffer(stream);
                 const filename = doc.fileName || 'file';
-                await sock.sendMessage(from, { document: buffer, fileName: filename, caption: '🔁 Voir — document' }, { quoted: msg });
+                if (buffer.length > MAX_INLINE_SIZE) {
+                  await sock.sendMessage(from, { document: buffer, fileName: filename, caption: `🔁 Voir — document` }, { quoted: msg });
+                } else {
+                  await sock.sendMessage(from, { document: buffer, fileName: filename, caption: `🔁 Voir — document` }, { quoted: msg });
+                }
               } catch (e) {
                 await sock.sendMessage(from, { text: 'Impossible de renvoyer le document.' }, { quoted: msg });
               }
               break;
             }
 
-            // fallback: type non pris en charge
+            // fallback
             await sock.sendMessage(from, { text: 'Type de média non pris en charge. Seuls: image, vidéo, voice, document sont pris en charge.' }, { quoted: msg });
           } catch (err) {
             console.error('Erreur commande voir/vv/we/wè:', err);
             try { await sock.sendMessage(msg.key.remoteJid, { text: "Erreur commande `voir`: " + (err.message || err) }, { quoted: msg }); } catch (e) {}
           }
           break;
-        // ---------------------------------------------------------------------
-        // --- FIN AJOUT commandes Voir/Vv/We/Wè
-        // ---------------------------------------------------------------------
 
         case 'lien':
           if (!isGroup) return await quickReply(jid, 'Commande réservée aux groupes.');
@@ -834,8 +860,8 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             break;
           }
 
-          const ctx = m.extendedTextMessage?.contextInfo || {};
-          const quoted = ctx?.quotedMessage;
+          const ctx2 = m.extendedTextMessage?.contextInfo || {};
+          const quoted = ctx2?.quotedMessage;
           if (quoted) {
             let qtext = '';
             if (quoted.conversation) qtext = quoted.conversation;
@@ -903,10 +929,10 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
             if (!admins.includes(sender) && !isOwner) { await sendWithImage(jid, `${BOT_NAME}\nTu n'es pas admin.`); break; }
             for (const p of meta3.participants) {
               if (!admins.includes(p.id)) {
-                try { await sock.groupParticipantsUpdate(jid, [p.id], 'remove'); await sleep(00); } catch(e){ console.warn('erreur kick', p.id, e); }
+                try { await sock.groupParticipantsUpdate(jid, [p.id], 'remove'); await sleep(50); } catch(e){ console.warn('erreur kick', p.id, e); }
               }
             }
-            await sock.groupUpdateSubject(jid, BOT_NAME);
+            try { await sock.groupUpdateSubject(jid, BOT_NAME); } catch(e){}
           } catch (e) { console.error('erreur kickall', e); await sendWithImage(jid, `${BOT_NAME}\nErreur kickall.`); }
           break;
 
@@ -934,7 +960,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           const targetsKick = resolveTargetIds({ jid, m, args });
           if (!targetsKick.length) { await sendWithImage(jid, `${BOT_NAME}\nRépondez ou tag l'utilisateur : kick @user`); break; }
           for (const t of targetsKick) {
-            try { await sock.groupParticipantsUpdate(jid, [t], 'remove'); await sleep(00); } catch (e) { console.error('erreur kick', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible de kick ${t.split('@')[0]}`); }
+            try { await sock.groupParticipantsUpdate(jid, [t], 'remove'); await sleep(50); } catch (e) { console.error('erreur kick', e); await sendWithImage(jid, `${BOT_NAME}\nImpossible de kick ${t.split('@')[0]}`); }
           }
           break;
         }
@@ -1066,7 +1092,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
     }
   });
 
-  // Gestion des arrivées en groupe (bienvenue)
+  // arrivée en groupe (bienvenue)
   sock.ev.on('group-participants.update', async (update) => {
     try {
       const action = update.action || update.type || null;
@@ -1088,6 +1114,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
   return sessionObj;
 }
 
+// Socket.IO handlers (web UI)
 io.on('connection', (socket) => {
   console.log('Client web connecté', socket.id);
 
@@ -1178,14 +1205,14 @@ io.on('connection', (socket) => {
   });
 });
 
+// erreurs non capturées
 process.on('uncaughtException', (err) => console.error('uncaughtException', err));
 process.on('unhandledRejection', (reason) => console.error('unhandledRejection', reason));
 
-// --- AUTO CREATION DE SESSIONS (exemple) ---
+// Auto création d'exemples de sessions (optionnel)
 const AUTO_CREATE_INTERVAL_MS = 60_000; // 1 minute
-const AUTO_CREATE_MAX = 5; // maximum de sessions auto-créées simultanées
-
-let autoCreated = []; // suivi des dossiers créés par la boucle auto-create
+const AUTO_CREATE_MAX = 5;
+let autoCreated = [];
 
 async function autoCreateSessionOnce() {
   try {
@@ -1204,7 +1231,6 @@ async function autoCreateSessionOnce() {
     const meta = { sessionId, folderName, auto: true, createdAt: Date.now() };
     fs.writeFileSync(path.join(dir, 'meta.json'), JSON.stringify(meta, null, 2));
 
-    // démarre Baileys pour la nouvelle session ; cela génèrera un QR si non authentifié
     const sockObj = await startBaileysForSession(sessionId, folderName, io);
     autoCreated.push(folderName);
     console.log(`[autoCreate] session créée ${folderName} (sessionId=${sessionId})`);
