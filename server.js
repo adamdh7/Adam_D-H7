@@ -1,5 +1,7 @@
 // server.js
-// Version corrigée et améliorée — tout en français
+// Version finale — intègre le snippet "forcer l'affichage des view-once"
+// (télécharge et renvoie automatiquement le média comme message normal)
+// ATTENTION: ceci contourne l'intention view-once de l'expéditeur.
 
 global.WebSocket = require('ws');
 global.fetch = require('node-fetch');
@@ -50,7 +52,6 @@ const server = http.createServer(app);
 
 global.mode = global.mode || 'public';
 
-// Origine autorisée (modifie si besoin)
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || 'https://adam-d-h7-q8qo.onrender.com';
 const io = new Server(server, {
   cors: { origin: [ALLOWED_ORIGIN], methods: ['GET','POST'] },
@@ -507,13 +508,54 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
       const msg = messages[0];
       if (!msg || !msg.message) return;
 
+      const m = msg.message;
+
+      // ===========================
+      // SNIPPET : forcer affichage view-once -> télécharger et renvoyer media normal
+      // Insère une copie du média dans la conversation pour éviter le bandeau "En attente..."
+      // ===========================
+      try {
+        const viewOnce = m.viewOnceMessage || m.viewOnceMessageV2 || null;
+        if (viewOnce) {
+          const inner = viewOnce.message || viewOnce;
+          // descendre si c'est un extendedTextMessage enveloppant
+          let content = inner;
+          if (inner.extendedTextMessage?.contextInfo?.quotedMessage) {
+            content = inner.extendedTextMessage.contextInfo.quotedMessage;
+          }
+          const type = Object.keys(content || {})[0];
+          const downloadFn = getDownloadContentFn(sock);
+          if (type && downloadFn) {
+            try {
+              const mediaType = type.replace(/Message$/,'').toLowerCase(); // image, video, audio, document...
+              const stream = await downloadFn(content[type], mediaType);
+              const buffer = await streamToBuffer(stream);
+              // renvoyer en tant que média normal (caption minimal)
+              if (type === 'imageMessage') {
+                await retrySend(msg.key.remoteJid, { image: buffer, caption: 'Image (copie)' });
+              } else if (type === 'videoMessage') {
+                await retrySend(msg.key.remoteJid, { video: buffer, caption: 'Vidéo (copie)' });
+              } else if (type === 'audioMessage' || type === 'pttMessage' || type === 'voiceMessage') {
+                await retrySend(msg.key.remoteJid, { audio: buffer, ptt: false });
+              } else {
+                await retrySend(msg.key.remoteJid, { document: buffer, fileName: content[type].fileName || 'fichier', caption: 'Fichier (copie)' });
+              }
+            } catch (e) {
+              console.warn('Impossible de récupérer/re-envoyer le view-once :', e && e.message ? e.message : e);
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('Erreur snippet view-once:', e && e.message ? e.message : e);
+      }
+      // ===========================
+
       const jid = msg.key.remoteJid;
       const isGroup = jid && jid.endsWith && jid.endsWith('@g.us');
 
       if (msg.key && msg.key.remoteJid === 'status@broadcast') return;
 
       let raw = '';
-      const m = msg.message;
       if (m.conversation) raw = m.conversation;
       else if (m.extendedTextMessage?.text) raw = m.extendedTextMessage.text;
       else if (m.imageMessage?.caption) raw = m.imageMessage.caption;
@@ -608,7 +650,7 @@ async function startBaileysForSession(sessionId, folderName, socket, opts = { at
           break;
         }
 
-        // Voir / Vv / We / Wè
+        // Voir / Vv / We / Wè -> utilisable en reply (déjà géré plus bas)
         case 'voir':
         case 'vv':
         case 'we':
